@@ -1,0 +1,710 @@
+openapi: 3.1.0
+info:
+  title: Stilla Midwife Co-pilot — Admin API
+  version: 0.1.0
+  description: |
+    Internal REST API consumed exclusively by the Vue 3 PWA.
+    All endpoints require Bearer token authentication (ADMIN_TOKEN secret).
+    All endpoints enforce the co-pilot gate: no outbound WhatsApp message
+    is sent without an explicit midwife action on a /reply endpoint.
+
+servers:
+  - url: /api/admin
+    description: Served from the same Cloud Run service as the PWA
+
+security:
+  - BearerToken: []
+
+components:
+  securitySchemes:
+    BearerToken:
+      type: http
+      scheme: bearer
+
+  schemas:
+
+    ClientState:
+      type: string
+      enum:
+        - pending_invite
+        - awaiting_consent
+        - active
+        - paused
+        - window_closed
+        - archived
+      description: Current state of the client in the onboarding/conversation state machine
+
+    UrgencyLevel:
+      type: string
+      enum:
+        - urgent
+        - high
+        - normal
+        - low
+
+    ActionType:
+      type: string
+      enum:
+        - ai_approved
+        - ai_edited
+        - midwife_original
+
+    Citation:
+      type: object
+      required: [chunk_id, snippet]
+      properties:
+        chunk_id:
+          type: string
+          description: Vertex AI Search document/chunk identifier
+        snippet:
+          type: string
+          description: Extracted text snippet shown to the midwife alongside the draft
+
+    Client:
+      type: object
+      required: [id, name, phone_number, due_date, state, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        phone_number:
+          type: string
+          description: E.164 format
+          example: "+972501234567"
+        due_date:
+          type: string
+          format: date
+        state:
+          $ref: '#/components/schemas/ClientState'
+        invite_link:
+          type: string
+          description: wa.me tokenized invite URL; present only while state=pending_invite
+        human_only_preference:
+          type: boolean
+          default: false
+        last_client_inbound_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateClientRequest:
+      type: object
+      required: [name, phone_number, due_date]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        phone_number:
+          type: string
+          description: E.164 format
+          pattern: '^\+[1-9]\d{1,14}$'
+        due_date:
+          type: string
+          format: date
+
+    Message:
+      type: object
+      required: [id, direction, body, timestamp]
+      properties:
+        id:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        body:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        urgency:
+          $ref: '#/components/schemas/UrgencyLevel'
+          description: Present only for inbound messages
+        action_type:
+          $ref: '#/components/schemas/ActionType'
+          description: Present only for outbound messages
+        draft_id:
+          type: string
+          nullable: true
+          description: Present for outbound messages that were AI-drafted
+
+    AIDraft:
+      type: object
+      required: [id, body, urgency, citations, status, created_at]
+      properties:
+        id:
+          type: string
+        body:
+          type: string
+        urgency:
+          $ref: '#/components/schemas/UrgencyLevel'
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+        status:
+          type: string
+          enum: [pending, approved, edited, discarded]
+        created_at:
+          type: string
+          format: date-time
+
+    ConversationSummary:
+      type: object
+      description: Inbox item — one per client with pending activity
+      required: [conversation_id, client, has_pending_draft, updated_at]
+      properties:
+        conversation_id:
+          type: string
+        client:
+          $ref: '#/components/schemas/Client'
+        has_pending_draft:
+          type: boolean
+        current_urgency:
+          $ref: '#/components/schemas/UrgencyLevel'
+          nullable: true
+        latest_inbound_preview:
+          type: string
+          description: First 120 chars of the latest unactioned inbound message
+        updated_at:
+          type: string
+          format: date-time
+
+    ConversationDetail:
+      type: object
+      required: [conversation_id, client, messages]
+      properties:
+        conversation_id:
+          type: string
+        client:
+          $ref: '#/components/schemas/Client'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        current_draft:
+          $ref: '#/components/schemas/AIDraft'
+          nullable: true
+        window_open:
+          type: boolean
+          description: True if last client inbound was within 24 hours
+
+    ReplyRequest:
+      type: object
+      required: [text, source]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: The message text to send to the client
+        source:
+          type: string
+          enum: [approved, edited, original]
+          description: |
+            approved — midwife sent the draft as-is (ai_approved)
+            edited   — midwife modified the draft before sending (ai_edited)
+            original — midwife wrote from scratch (midwife_original)
+
+    ReplyResponse:
+      type: object
+      required: [message_id, sent_at]
+      properties:
+        message_id:
+          type: string
+          description: WhatsApp message ID of the sent message
+        sent_at:
+          type: string
+          format: date-time
+
+    StagedKBItem:
+      type: object
+      required: [id, question, answer, staged_at, status]
+      properties:
+        id:
+          type: string
+        question:
+          type: string
+        answer:
+          type: string
+        conversation_id:
+          type: string
+        staged_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, promoted, discarded]
+
+    PushSubscription:
+      type: object
+      required: [endpoint, keys]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+        keys:
+          type: object
+          required: [p256dh, auth]
+          properties:
+            p256dh:
+              type: string
+            auth:
+              type: string
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+
+paths:
+
+  # ── Clients ──────────────────────────────────────────────────────────────
+
+  /clients:
+    get:
+      operationId: listClients
+      summary: List all clients
+      tags: [Clients]
+      parameters:
+        - name: state
+          in: query
+          schema:
+            $ref: '#/components/schemas/ClientState'
+          description: Filter by client state
+      responses:
+        '200':
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Client'
+
+    post:
+      operationId: createClient
+      summary: Create a new client and generate an invite link
+      tags: [Clients]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClientRequest'
+      responses:
+        '201':
+          description: Client created with invite link
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '409':
+          description: Phone number already registered to an active client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /clients/{client_id}:
+    get:
+      operationId: getClient
+      summary: Get client profile and current state
+      tags: [Clients]
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Client profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '404':
+          description: Client not found
+
+  /clients/{client_id}/archive:
+    post:
+      operationId: archiveClient
+      summary: Archive a client — stops all inbound processing
+      tags: [Clients]
+      parameters:
+        - name: client_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Client archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '404':
+          description: Client not found
+
+  # ── Conversations / Inbox ─────────────────────────────────────────────────
+
+  /conversations:
+    get:
+      operationId: listConversations
+      summary: Inbox — all conversations with pending drafts or urgent items
+      description: |
+        Returns conversations ordered by urgency (urgent/high first) then by
+        updated_at descending. Used to populate the PWA inbox.
+      tags: [Conversations]
+      responses:
+        '200':
+          description: Inbox items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConversationSummary'
+
+  /conversations/{conversation_id}:
+    get:
+      operationId: getConversation
+      summary: Full conversation thread with current draft
+      tags: [Conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Conversation detail with messages and current draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationDetail'
+        '404':
+          description: Conversation not found
+
+  /conversations/{conversation_id}/reply:
+    post:
+      operationId: sendReply
+      summary: Send a reply to the client via WhatsApp
+      description: |
+        THE ONLY endpoint that results in an outbound WhatsApp message.
+        Enforces 24-hour window check before calling the WhatsApp adapter.
+        Returns 422 if the window is closed.
+      tags: [Conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplyRequest'
+      responses:
+        '200':
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplyResponse'
+        '404':
+          description: Conversation not found
+        '422':
+          description: 24-hour window is closed or client is not in active state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, last_inbound_at]
+                properties:
+                  error:
+                    type: string
+                    enum: [window_closed, client_not_active, client_paused, client_archived]
+                  last_inbound_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+
+  /conversations/{conversation_id}/tag_kb:
+    post:
+      operationId: tagForKB
+      summary: Tag the last Q&A pair for KB staging review
+      description: |
+        Queues the most recent (client question, approved reply) pair to the
+        kb_staging Firestore collection and the staging Vertex AI Search index.
+        Does NOT go to the production index.
+      tags: [Conversations]
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Q&A pair queued to KB staging
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StagedKBItem'
+        '404':
+          description: Conversation not found or no sent reply to tag
+        '409':
+          description: Most recent reply already tagged
+
+  # ── Knowledge Base Staging Review ─────────────────────────────────────────
+
+  /kb/staging:
+    get:
+      operationId: listStagingQueue
+      summary: Weekly KB review queue — all pending staged items
+      tags: [KB]
+      responses:
+        '200':
+          description: Staged items pending review
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StagedKBItem'
+
+  /kb/staging/{item_id}/promote:
+    post:
+      operationId: promoteStagedItem
+      summary: Promote a staged Q&A item to the production knowledge base index
+      tags: [KB]
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Item promoted to production index
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StagedKBItem'
+        '404':
+          description: Staged item not found
+        '409':
+          description: Item already promoted or discarded
+
+  /kb/staging/{item_id}/edit:
+    post:
+      operationId: editAndPromoteStagedItem
+      summary: Edit a staged item then promote it to the production index
+      tags: [KB]
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                question:
+                  type: string
+                  description: Optionally override the question text
+                answer:
+                  type: string
+                  description: Updated answer text before promotion
+      responses:
+        '200':
+          description: Item edited and promoted to production index
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StagedKBItem'
+        '404':
+          description: Staged item not found
+
+  /kb/staging/{item_id}/discard:
+    post:
+      operationId: discardStagedItem
+      summary: Permanently discard a staged item — never enters production
+      tags: [KB]
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Item discarded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StagedKBItem'
+        '404':
+          description: Staged item not found
+
+  # ── Push Notifications ────────────────────────────────────────────────────
+
+  /push/subscribe:
+    post:
+      operationId: registerPushSubscription
+      summary: Register a Web Push subscription for the midwife's device
+      tags: [Push]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushSubscription'
+      responses:
+        '201':
+          description: Subscription registered
+        '200':
+          description: Subscription already registered (idempotent)
+
+    delete:
+      operationId: unregisterPushSubscription
+      summary: Unregister a Web Push subscription
+      tags: [Push]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint]
+              properties:
+                endpoint:
+                  type: string
+                  format: uri
+      responses:
+        '204':
+          description: Subscription removed
+
+  # ── Webhook (WhatsApp) ────────────────────────────────────────────────────
+  # Note: These are NOT admin endpoints (no Bearer token).
+  # Documented here for completeness; actual routes are at /webhook, not /api/admin/webhook.
+
+  /../../webhook:
+    get:
+      operationId: webhookVerify
+      summary: WhatsApp webhook verification challenge
+      tags: [Webhook]
+      security: []
+      parameters:
+        - name: hub.mode
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: hub.verify_token
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: hub.challenge
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Challenge echoed back
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: Token mismatch
+
+    post:
+      operationId: webhookReceive
+      summary: Receive inbound WhatsApp messages
+      tags: [Webhook]
+      security: []
+      description: |
+        Verifies X-Hub-Signature-256 header. Returns 200 immediately.
+        Processing (audit log, safety triage, draft generation, push notification)
+        runs asynchronously as a BackgroundTask.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: WhatsApp Cloud API webhook payload (Meta-defined schema)
+      responses:
+        '200':
+          description: Acknowledged
+        '403':
+          description: Signature verification failed
+
+  # ── /ask (Mobile-ready core) ──────────────────────────────────────────────
+  # Not under /api/admin — separate route, but documented here for completeness.
+
+  /../../ask:
+    post:
+      operationId: ask
+      summary: Direct question endpoint — returns draft without sending
+      tags: [Core]
+      security:
+        - BearerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, message]
+              properties:
+                user_id:
+                  type: string
+                  description: Client phone number (E.164)
+                message:
+                  type: string
+                conversation_id:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: Draft generated (never sent autonomously)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [draft, urgency, sources, requires_review]
+                properties:
+                  draft:
+                    type: string
+                  urgency:
+                    $ref: '#/components/schemas/UrgencyLevel'
+                  sources:
+                    type: array
+                    items:
+                      type: string
+                    description: Chunk IDs used for generation
+                  requires_review:
+                    type: boolean
+                    description: Always true in co-pilot mode
+                    enum: [true]
