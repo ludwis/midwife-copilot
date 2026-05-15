@@ -120,9 +120,13 @@ When the midwife tries to send a reply to a client but more than 24 hours have p
 
 **Inbound Message Processing**
 
-- **FR-007**: The system MUST classify every inbound message from an active client into one of four urgency levels.
-- **FR-008**: The system MUST NOT generate an AI draft for any message classified as high urgency.
-- **FR-009**: The system MUST send a push notification to the midwife for every inbound message — high-priority for urgent, standard-priority for normal.
+- **FR-007**: The system MUST classify every inbound message from an active client into one of four urgency levels:
+  - **urgent**: Immediate safety concern — active emergency, imminent birth, heavy bleeding, loss of consciousness, signs of eclampsia or severe pre-eclampsia.
+  - **high**: Elevated concern requiring prompt midwife attention but not an active emergency — reduced fetal movement, moderate pain, unusual symptoms not clearly emergent.
+  - **normal**: Routine clinical or logistical question that can be addressed with an AI-drafted reply — appointment queries, medication questions, general pregnancy advice.
+  - **low**: Non-clinical or administrative message — greetings, confirmations, thank-yous, scheduling acknowledgements.
+- **FR-008**: The system MUST NOT generate an AI draft for any message classified as `urgent` or `high` urgency (both levels defined in FR-007).
+- **FR-009**: The system MUST send a push notification to the midwife for every inbound message — high-priority (RFC 8030 `Urgency: high`) for `urgent` and `high`, standard-priority for `normal` and `low`.
 - **FR-010**: For normal-urgency messages, the system MUST generate an AI draft reply grounded in the knowledge base, including citations to the source material used.
 - **FR-011**: Every inbound message MUST be written to the append-only audit log before any further processing occurs.
 
@@ -213,3 +217,19 @@ When the midwife tries to send a reply to a client but more than 24 hours have p
 - All client data is stored in a European region to meet GDPR residency expectations; formal DPA and legal review are pre-launch gates, not MVP-blocking code tasks.
 - iOS push notifications require the PWA to be installed to the home screen (iOS 16.4+); if the pilot midwife uses Android, this constraint does not apply.
 - Right-to-be-forgotten self-service flow for clients is post-MVP; data deletion is handled manually on request during the pilot.
+
+---
+
+## Fixed MVP Content
+
+### Consent & AI-Disclosure Prompt (`CONSENT_PROMPT_TEXT`)
+
+The following text is sent verbatim to every new client upon successful invite token match (FR-004, FR-026). It is fixed for MVP; customisable templates are post-MVP.
+
+> Welcome! You are connecting to your midwife's secure messaging service.
+>
+> Please note: this service uses AI-assisted reply drafting. Your midwife personally reviews and approves every message before it is sent to you — no message is ever delivered automatically without her review and consent.
+>
+> To confirm you understand and agree to receive messages this way, please reply **YES**.
+
+**On non-YES reply**, the same prompt is resent as-is (no separate retry template in MVP). The client must reply YES to proceed.
