@@ -1,0 +1,197 @@
+openapi: "3.1.0"
+
+info:
+  title: "Stilla KB Ingestion API"
+  description: |
+    Phase 1 — Knowledge Foundation. Admin-only endpoints for uploading chat export
+    files and triggering the extraction pipeline.
+
+    All endpoints require the `X-Admin-Token` header (value from `ADMIN_TOKEN` env var).
+    Extraction runs asynchronously — the import status is polled via GET /api/admin/kb/imports/{import_id}.
+  version: "1.0.0"
+
+servers:
+  - url: "http://localhost:8000"
+    description: "Local development (Vite proxy: localhost:5173 → localhost:8000)"
+  - url: "https://midwife-bot-{env}.run.app"
+    description: "Cloud Run (europe-west1)"
+
+security:
+  - AdminToken: []
+
+paths:
+
+  /api/admin/kb/imports:
+    post:
+      operationId: createImport
+      summary: "Upload a chat export file and trigger extraction"
+      description: |
+        Accepts a single chat export file (WhatsApp .txt or Messenger .json).
+        Creates an `kb_imports` document, enqueues extraction as a background task,
+        and returns immediately with the import ID. Poll GET /api/admin/kb/imports/{import_id}
+        for status.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - source_format
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "The chat export file (max 10 MB)"
+                source_format:
+                  type: string
+                  enum: [whatsapp_txt, messenger_json]
+                  description: "Format of the uploaded export"
+      responses:
+        "202":
+          description: "Import accepted; extraction running in background"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportCreatedResponse"
+        "400":
+          description: "Invalid file format or missing fields"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: "File exceeds 10 MB limit"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    get:
+      operationId: listImports
+      summary: "List all past import runs"
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [processing, completed, failed, no_pairs_found]
+          description: "Filter by import status"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: "List of imports, newest first"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imports:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImportSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/kb/imports/{import_id}:
+    get:
+      operationId: getImport
+      summary: "Get the status and summary of a specific import run"
+      parameters:
+        - name: import_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Import details"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportDetail"
+        "404":
+          description: "Import not found"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+
+  securitySchemes:
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+
+  responses:
+    Unauthorized:
+      description: "Missing or invalid admin token"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+
+    ImportCreatedResponse:
+      type: object
+      required: [import_id, status, submitted_at]
+      properties:
+        import_id:
+          type: string
+          example: "imp_abc123"
+        status:
+          type: string
+          enum: [processing]
+        submitted_at:
+          type: string
+          format: date-time
+
+    ImportSummary:
+      type: object
+      required: [import_id, source_format, status, submitted_at]
+      properties:
+        import_id:
+          type: string
+        source_format:
+          type: string
+          enum: [whatsapp_txt, messenger_json]
+        status:
+          type: string
+          enum: [processing, completed, failed, no_pairs_found]
+        submitted_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        chunks_extracted:
+          type: integer
+          nullable: true
+        chunks_flagged_duplicate:
+          type: integer
+          nullable: true
+
+    ImportDetail:
+      allOf:
+        - $ref: "#/components/schemas/ImportSummary"
+        - type: object
+          properties:
+            error_message:
+              type: string
+              nullable: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "Invalid source_format. Must be 'whatsapp_txt' or 'messenger_json'."

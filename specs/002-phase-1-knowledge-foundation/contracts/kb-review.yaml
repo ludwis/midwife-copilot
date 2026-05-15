@@ -1,0 +1,331 @@
+openapi: "3.1.0"
+
+info:
+  title: "Stilla KB Review API"
+  description: |
+    Phase 1 — Knowledge Foundation. Admin-only endpoints for reviewing staged
+    knowledge chunks, taking approve/edit/discard actions, promoting chunks to
+    the production index, and querying the production index for validation.
+
+    All endpoints require the `X-Admin-Token` header.
+  version: "1.0.0"
+
+servers:
+  - url: "http://localhost:8000"
+    description: "Local development"
+  - url: "https://midwife-bot-{env}.run.app"
+    description: "Cloud Run (europe-west1)"
+
+security:
+  - AdminToken: []
+
+paths:
+
+  /api/admin/kb/chunks:
+    get:
+      operationId: listChunks
+      summary: "List knowledge chunks, filterable by status"
+      description: |
+        Returns chunks newest-first. Use `status=staged` to get the review queue.
+        Duplicate-flagged chunks include the `duplicate_of` field for side-by-side comparison.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [staged, approved, promoted, discarded]
+          description: "Filter by chunk status (omit for all)"
+        - name: import_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Filter by source import run"
+        - name: duplicate_flag
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [exact, near]
+          description: "Filter to only duplicate-flagged chunks"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Pagination cursor from previous response"
+      responses:
+        "200":
+          description: "Paginated list of chunks"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chunks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChunkSummary"
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  total_staged:
+                    type: integer
+                    description: "Total number of chunks currently in staged status"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/kb/chunks/{chunk_id}:
+    get:
+      operationId: getChunk
+      summary: "Get full detail for a single knowledge chunk"
+      parameters:
+        - name: chunk_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "Chunk detail"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChunkDetail"
+        "404":
+          description: "Chunk not found"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    patch:
+      operationId: reviewChunk
+      summary: "Take a review action on a staged chunk: approve, edit-then-approve, or discard"
+      description: |
+        Valid actions on `staged` chunks:
+        - `approve`: mark as approved with no content changes
+        - `edit_approve`: update question/answer content, then approve
+        - `discard`: remove from review queue (terminal)
+
+        Approve and edit_approve trigger immediate promotion to the production Vertex AI
+        Search index. Status transitions to `promoted` on success.
+      parameters:
+        - name: chunk_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewAction"
+      responses:
+        "200":
+          description: "Review action applied"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChunkDetail"
+        "400":
+          description: "Invalid action or chunk is not in staged status"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: "Chunk not found"
+        "409":
+          description: "Concurrent review conflict — chunk was already actioned"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/kb/production/query:
+    get:
+      operationId: queryProduction
+      summary: "Test query against the production Vertex AI Search index"
+      description: |
+        Runs a semantic search against the production index and returns matching
+        chunks with their relevance snippets. Used for SC-007 validation: confirm
+        that promoted chunks are retrievable for representative midwifery questions.
+        This action is recorded in the audit log as `kb_query_test`.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: "Natural language query (e.g., 'Is pelvic pressure normal at 36 weeks?')"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 5
+            maximum: 10
+      responses:
+        "200":
+          description: "Search results from the production index"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QueryResult"
+                  total_results:
+                    type: integer
+        "400":
+          description: "Missing or empty query"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+
+  securitySchemes:
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+
+  responses:
+    Unauthorized:
+      description: "Missing or invalid admin token"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+
+    ChunkSummary:
+      type: object
+      required: [chunk_id, question, answer, status, staged_at, source_type]
+      properties:
+        chunk_id:
+          type: string
+          example: "chk_xyz789"
+        question:
+          type: string
+          example: "Is it normal to feel pelvic pressure at 36 weeks?"
+        answer:
+          type: string
+          example: "Yes, pelvic pressure is common in the third trimester..."
+        status:
+          type: string
+          enum: [staged, approved, promoted, discarded]
+        source_type:
+          type: string
+          enum: [export, conversation_reply]
+        import_id:
+          type: string
+          nullable: true
+        staged_at:
+          type: string
+          format: date-time
+        duplicate_flag:
+          type: string
+          enum: [exact, near]
+          nullable: true
+        similarity_score:
+          type: number
+          format: float
+          nullable: true
+          description: "Cosine similarity (0.0–1.0) if near-duplicate flagged"
+        duplicate_of:
+          description: "The existing chunk this one is similar to (if flagged)"
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ChunkSummary"
+
+    ChunkDetail:
+      allOf:
+        - $ref: "#/components/schemas/ChunkSummary"
+        - type: object
+          properties:
+            content_hash:
+              type: string
+            content_hash_before_edit:
+              type: string
+              nullable: true
+            reviewed_at:
+              type: string
+              format: date-time
+              nullable: true
+            reviewed_by:
+              type: string
+              nullable: true
+            production_vertex_id:
+              type: string
+              nullable: true
+            promoted_at:
+              type: string
+              format: date-time
+              nullable: true
+
+    ReviewAction:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, edit_approve, discard]
+          description: |
+            - `approve`: accept the chunk as-is
+            - `edit_approve`: update content fields and approve
+            - `discard`: reject the chunk permanently
+        question:
+          type: string
+          description: "Required when action is `edit_approve`. Updated question text."
+        answer:
+          type: string
+          description: "Required when action is `edit_approve`. Updated answer text."
+      examples:
+        approve:
+          value:
+            action: approve
+        edit_approve:
+          value:
+            action: edit_approve
+            question: "Is pelvic pressure normal late in pregnancy?"
+            answer: "Yes, pelvic pressure is common from around 36 weeks as the baby descends."
+        discard:
+          value:
+            action: discard
+
+    QueryResult:
+      type: object
+      required: [chunk_id, question, answer, snippet]
+      properties:
+        chunk_id:
+          type: string
+        question:
+          type: string
+        answer:
+          type: string
+        snippet:
+          type: string
+          description: "Extractive snippet returned by Vertex AI Search for this query"
+        promoted_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "Chunk chk_xyz789 is in 'promoted' status and cannot be reviewed."
