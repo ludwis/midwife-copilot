@@ -40,6 +40,18 @@ Without a knowledge base, there is nothing to retrieve — the AI pipeline in Ph
 
 ---
 
+## Clarifications
+
+### Session 2026-05-15
+
+- Q: What type of review interface is in scope for Phase 1? → A: Minimal web app on Firebase Hosting
+- Q: What authentication mechanism should protect the Phase 1 admin review interface? → A: Google OAuth via Firebase Auth
+- Q: When a batch is fully discarded, should the midwife be able to re-submit the same export file? → A: Allow re-submission — creates a new import record; previous discard history preserved in audit log
+- Q: When an extraction fails (e.g., persistent Gemini API error), how should the midwife recover? → A: Re-submit the file using the existing FR-015 re-import flow; no separate retry mechanism needed
+- Q: What is the target deployment posture for Phase 1? → A: Single shared `dev` GCP project from day one; no local-only phase
+
+---
+
 ## User Scenarios & Testing
 
 ### User Story 1 — Knowledge Extraction from Chat Exports (Priority: P1)
@@ -113,8 +125,9 @@ Every extraction run, every staging action (approve / edit / discard / promote),
 ### Edge Cases
 
 - What happens when a chat export contains no identifiable Q&A pairs (e.g., it is purely social conversation)?
+- If extraction fails due to a persistent API error, the midwife recovers by re-submitting the file. The `kb_imports.error_message` field surfaces the failure reason in the review UI. No separate retry mechanism is provided; the re-submission path (FR-015) is the recovery path for both failed and fully-discarded imports.
 - What happens when two extractions produce near-identical chunks — does the system flag potential duplicates before staging?
-- What if the midwife discards all extracted chunks from a batch — can she re-process the same export with different extraction parameters?
+- If the midwife discards all extracted chunks from a batch, she MAY re-submit the same export file. A new `kb_imports` document is created (same `filename_hash`, new `import_id`); the prior import and all its discarded chunks remain in the audit log. Multiple `kb_imports` records sharing a `filename_hash` are valid and expected in this scenario.
 - What if the messaging channel registration is rejected by the platform — is there a documented fallback channel?
 
 ---
@@ -135,6 +148,9 @@ Every extraction run, every staging action (approve / edit / discard / promote),
 - **FR-010**: Messaging channel business registration MUST be initiated by end of Phase 1 (registration approval has a long and unpredictable lead time).
 - **FR-011**: System MUST maintain two separate knowledge indexes (staging and production) that are independently queryable.
 - **FR-012**: When near-duplicate chunks are detected during extraction, the system MUST surface them for explicit reviewer decision rather than auto-deduplicating silently.
+- **FR-013**: Phase 1 MUST include a minimal web app deployed to Firebase Hosting that provides the chunk review interface — supporting read, approve, edit-then-approve, discard, and promote-to-production actions. This app establishes the hosting and auth infrastructure the Phase 3 PWA will extend.
+- **FR-014**: The Phase 1 admin review app MUST be protected by Firebase Auth using Google OAuth as the sole sign-in provider. Access is restricted to a single pre-authorised Google account (the midwife's). No unauthenticated routes may reach review or promotion functionality.
+- **FR-015**: The system MUST allow re-submission of a previously imported export file. Each submission creates a new `kb_imports` document with the same `filename_hash` and a new `import_id`. Multiple `kb_imports` records with the same `filename_hash` are valid; deduplication logic (FR-012) handles any resulting duplicate chunks at staging time. This re-submission path serves as the recovery mechanism for both fully-discarded batches and failed extractions (`status: failed`).
 
 ### Key Entities
 
@@ -168,6 +184,7 @@ Every extraction run, every staging action (approve / edit / discard / promote),
 - A designated compliance reviewer (the midwife herself or a qualified advisor) is available to review the compliance framework before Phase 3.
 - Messaging channel approval has no guaranteed timeline; initiating registration in Phase 1 is necessary to avoid blocking Phase 3.
 - The two-index architecture (staging and production) is a fixed architectural constraint — unreviewed knowledge must never reach production.
+- Phase 1 targets a single shared `dev` GCP project from day one. Unit and integration tests use the Firestore emulator and VCR fixtures for Gemini; Vertex AI Search and GCS audit log tests require the real `dev` GCP project (no local emulator exists for Vertex AI Search). A separate `prod` GCP environment is introduced no earlier than Phase 4.
 - Right-to-erasure for the audit log follows the applicable legal exception: audit records are retained even after client erasure requests because they constitute evidence needed for legal claims.
 - Personal identifiers in source chat exports are removed at extraction time, not at staging time, so that no client PII ever enters the staging index.
 - 30–50% of auto-extracted chunks will be discarded after manual review — this is expected and acceptable.
