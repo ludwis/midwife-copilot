@@ -13,7 +13,7 @@ Scaffold the complete project directory structure, dependency manifests, configu
 ## Tasks
 
 - [x] T001 Create directory structure per plan.md: `backend/`, `backend/api/admin/kb/`, `backend/bot/kb/parsers/`, `backend/core/`, `backend/tests/unit/`, `backend/tests/integration/`, `backend/tests/fixtures/`, `frontend/src/pages/`, `frontend/src/stores/`, `frontend/src/router/`, `frontend/src/services/`, `frontend/public/`, `docs/`
-- [ ] T002 Create `backend/requirements.txt` with all required packages: FastAPI, uvicorn[standard], spacy, pydantic>=2, google-cloud-firestore, google-cloud-storage, google-cloud-aiplatform, google-cloud-discoveryengine, vertexai, pytest, pytest-recording, httpx
+- [x] T002 Create `backend/requirements.txt` with all required packages: FastAPI, uvicorn[standard], spacy, pydantic>=2, google-cloud-firestore, google-cloud-storage, google-cloud-aiplatform, google-cloud-discoveryengine, vertexai, pytest, pytest-recording, httpx
 - [ ] T003 [P] Create `.env.example` with all Phase 1 env vars: `VERTEX_SEARCH_DATASTORE_PRODUCTION`, `VERTEX_SEARCH_DATASTORE_STAGING`, `VERTEX_SEARCH_LOCATION`, `GCP_PROJECT_ID`, `GCP_REGION`, `ADMIN_TOKEN`, `AUDIT_BUCKET_NAME`, `FIRESTORE_EMULATOR_HOST`, `GEMINI_MODEL`, `SPACY_MODEL`, `DUPLICATE_SIMILARITY_THRESHOLD`, `VITE_ADMIN_EMAIL`, `VITE_ADMIN_TOKEN`
 - [ ] T004 [P] Create `frontend/package.json` with deps: vue@3, typescript, vite, @vitejs/plugin-vue, tailwindcss, autoprefixer, pinia, vue-router, vite-plugin-pwa, firebase@10
 - [ ] T005 [P] Create `frontend/vite.config.ts` (Vue plugin + PWA plugin; server proxy `/api` → `http://localhost:8000`; build output to `dist/`)
