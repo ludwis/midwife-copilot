@@ -69,6 +69,16 @@ def _get_env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _client_options():  # type: ignore[return]
+    """Return ClientOptions with regional endpoint for non-global Discovery Engine locations."""
+    from google.api_core.client_options import ClientOptions  # type: ignore[import]
+
+    location = _get_env("VERTEX_LOCATION", "eu")
+    if location and location != "global":
+        return ClientOptions(api_endpoint=f"{location}-discoveryengine.googleapis.com")
+    return None
+
+
 def _staging_branch_path() -> str:
     project = _get_env("GOOGLE_CLOUD_PROJECT", "")
     location = _get_env("VERTEX_LOCATION", "eu")
@@ -125,7 +135,7 @@ async def _create_staging_document(
         }
     )
 
-    client = discoveryengine.DocumentServiceAsyncClient()
+    client = discoveryengine.DocumentServiceAsyncClient(client_options=_client_options())
     request = discoveryengine.CreateDocumentRequest(
         parent=parent,
         document=discoveryengine.Document(
@@ -171,7 +181,7 @@ async def _create_production_document(
         }
     )
 
-    client = discoveryengine.DocumentServiceAsyncClient()
+    client = discoveryengine.DocumentServiceAsyncClient(client_options=_client_options())
     request = discoveryengine.CreateDocumentRequest(
         parent=parent,
         document=discoveryengine.Document(
@@ -191,7 +201,7 @@ async def _get_document(doc_name: str):  # type: ignore[return]
     """Retrieve a document by name from Discovery Engine (synchronous get, not search)."""
     from google.cloud import discoveryengine_v1 as discoveryengine  # type: ignore[import]
 
-    client = discoveryengine.DocumentServiceAsyncClient()
+    client = discoveryengine.DocumentServiceAsyncClient(client_options=_client_options())
     return await client.get_document(name=doc_name)
 
 
@@ -200,7 +210,7 @@ async def _delete_document(doc_name: str) -> None:
     from google.cloud import discoveryengine_v1 as discoveryengine  # type: ignore[import]
 
     try:
-        client = discoveryengine.DocumentServiceAsyncClient()
+        client = discoveryengine.DocumentServiceAsyncClient(client_options=_client_options())
         await client.delete_document(name=doc_name)
     except Exception:  # noqa: BLE001
         pass  # Best-effort cleanup; failure here must not mask test failures.
@@ -261,7 +271,8 @@ def test_staging_document_ingest_and_retrieval() -> None:
         )
 
         # structData schema — all staging fields must be present per data-model.md
-        fields = doc.struct_data.fields
+        # doc.struct_data is a proto-plus MapComposite (dict-like), not a protobuf Struct.
+        fields = dict(doc.struct_data)
         required_staging_fields = {
             "question", "answer", "source_type", "import_id", "content_hash", "staged_at"
         }
@@ -272,12 +283,12 @@ def test_staging_document_ingest_and_retrieval() -> None:
         )
 
         # Verify field values
-        assert fields["question"].string_value == _TEST_QUESTION
-        assert fields["answer"].string_value == _TEST_ANSWER
-        assert fields["source_type"].string_value == "export"
-        assert fields["import_id"].string_value == _TEST_IMPORT_ID
-        assert fields["content_hash"].string_value == content_hash
-        assert fields["staged_at"].string_value == _TEST_STAGED_AT
+        assert fields["question"] == _TEST_QUESTION
+        assert fields["answer"] == _TEST_ANSWER
+        assert fields["source_type"] == "export"
+        assert fields["import_id"] == _TEST_IMPORT_ID
+        assert fields["content_hash"] == content_hash
+        assert fields["staged_at"] == _TEST_STAGED_AT
 
     finally:
         asyncio.run(_delete_document(staging_doc_name))
@@ -332,7 +343,8 @@ def test_production_document_ingest_and_retrieval() -> None:
         )
 
         # structData schema — all production fields must be present per data-model.md
-        fields = doc.struct_data.fields
+        # doc.struct_data is a proto-plus MapComposite (dict-like), not a protobuf Struct.
+        fields = dict(doc.struct_data)
         required_production_fields = {
             "question", "answer", "source_type", "content_hash", "promoted_at"
         }
@@ -343,11 +355,11 @@ def test_production_document_ingest_and_retrieval() -> None:
         )
 
         # Verify field values
-        assert fields["question"].string_value == _TEST_QUESTION
-        assert fields["answer"].string_value == _TEST_ANSWER
-        assert fields["source_type"].string_value == "export"
-        assert fields["content_hash"].string_value == content_hash
-        assert fields["promoted_at"].string_value == _TEST_PROMOTED_AT
+        assert fields["question"] == _TEST_QUESTION
+        assert fields["answer"] == _TEST_ANSWER
+        assert fields["source_type"] == "export"
+        assert fields["content_hash"] == content_hash
+        assert fields["promoted_at"] == _TEST_PROMOTED_AT
 
     finally:
         asyncio.run(_delete_document(production_doc_name))
