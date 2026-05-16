@@ -1,4 +1,39 @@
+substitutions:
+  _AUDIT_BUCKET_NAME: midwife-bot-audit-dev
+
 steps:
+  # ---------------------------------------------------------------------------
+  # Audit bucket — dev (CI-active)
+  # Creates the dev GCS audit bucket on first run; subsequent runs are no-ops.
+  # ---------------------------------------------------------------------------
+  - id: create-audit-bucket-dev
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - gsutil mb -l europe-west1 gs://$_AUDIT_BUCKET_NAME || true
+
+  # ---------------------------------------------------------------------------
+  # PRODUCTION AUDIT BUCKET SETUP — DO NOT RUN IN CI
+  # IRREVERSIBLE — run once on production project only
+  #
+  # Uncomment and execute manually with:
+  #   gcloud builds submit --no-source --config cloudbuild.yaml \
+  #     --substitutions _AUDIT_BUCKET_NAME=midwife-bot-audit-prod
+  # (or run the gsutil commands directly in Cloud Shell)
+  #
+  # Steps:
+  #  - id: create-audit-bucket-production
+  #    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  #    entrypoint: bash
+  #    args:
+  #      - -c
+  #      - |
+  #        gsutil mb -l europe-west1 gs://midwife-bot-audit-prod
+  #        gsutil retention set 7y gs://midwife-bot-audit-prod
+  #        gsutil retention lock gs://midwife-bot-audit-prod
+  # ---------------------------------------------------------------------------
+
   - id: docker-build
     name: gcr.io/cloud-builders/docker
     args:
