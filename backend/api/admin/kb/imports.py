@@ -196,6 +196,7 @@ async def _run_pipeline(
             actor="midwife",
             import_id=import_id,
             status="failed",
+            duration_ms=int((failed_at - started_at).total_seconds() * 1000),
         )
 
 
