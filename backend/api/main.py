@@ -19,7 +19,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import spacy
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .admin.kb import router as kb_router
@@ -49,6 +51,16 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return errors as {error: ...} per the contract's ErrorResponse schema."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail},
+        headers=dict(exc.headers) if exc.headers else None,
+    )
 
 # All /api/admin/** routes require a valid X-Admin-Token header.
 app.include_router(

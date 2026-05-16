@@ -248,7 +248,7 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
     if data.get("status") != "staged":
         raise HTTPException(
             status_code=409,
-            detail=f"Chunk {chunk_id!r} is in {data.get('status')!r} status and cannot be reviewed.",
+            detail=f"Chunk {chunk_id} was already actioned — concurrent review conflict",
         )
 
     now = datetime.now(timezone.utc)
@@ -259,10 +259,10 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
 
         try:
             _commit_review(db.transaction(), chunk_ref, updates)
-        except _ChunkConflict as exc:
+        except _ChunkConflict:
             raise HTTPException(
                 status_code=409,
-                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+                detail=f"Chunk {chunk_id} was already actioned — concurrent review conflict",
             )
 
         core.audit.write_event("kb_chunk_discarded", actor="admin", chunk_id=chunk_id)
@@ -284,10 +284,10 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
 
         try:
             _commit_review(db.transaction(), chunk_ref, updates)
-        except _ChunkConflict as exc:
+        except _ChunkConflict:
             raise HTTPException(
                 status_code=409,
-                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+                detail=f"Chunk {chunk_id} was already actioned — concurrent review conflict",
             )
 
         core.audit.write_event(
@@ -326,10 +326,10 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
 
         try:
             _commit_review(db.transaction(), chunk_ref, updates)
-        except _ChunkConflict as exc:
+        except _ChunkConflict:
             raise HTTPException(
                 status_code=409,
-                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+                detail=f"Chunk {chunk_id} was already actioned — concurrent review conflict",
             )
 
         core.audit.write_event(

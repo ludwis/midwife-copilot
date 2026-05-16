@@ -222,6 +222,8 @@ async def create_import(
         )
 
     content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     if len(content) > _MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail="File exceeds 10 MB limit")
 
