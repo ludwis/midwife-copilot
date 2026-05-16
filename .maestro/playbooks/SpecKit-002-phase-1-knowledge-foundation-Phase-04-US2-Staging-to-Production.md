@@ -31,7 +31,8 @@ Implement the review-and-promotion pipeline: backend chunk promotion writer, GET
 
 ## Completion
 
-- [ ] Integration tests pass: `pytest backend/tests/integration/test_review_actions.py backend/tests/integration/test_kb_pipeline.py`
+- [x] Integration tests pass: `pytest backend/tests/integration/test_review_actions.py backend/tests/integration/test_kb_pipeline.py`
+  <!-- Verified 2026-05-16: 6/6 tests passed (5 review_actions + 1 kb_pipeline golden dataset) -->
 - [ ] Seed 5 staged chunks; approve 2, edit-approve 1, discard 1; verify `GET /api/admin/kb/chunks?status=promoted` returns 3
 - [ ] Query `GET /api/admin/kb/production/query?q=<midwifery question>` and confirm promoted chunks are returned
 - [ ] 409 is returned on second PATCH to already-actioned chunk
