@@ -290,7 +290,19 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
                 detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
             )
 
-        core.audit.write_event("kb_chunk_approved", actor="admin", chunk_id=chunk_id)
+        core.audit.write_event(
+            "kb_chunk_approved",
+            actor="admin",
+            chunk_id=chunk_id,
+            content_hash=content_hash,
+        )
+        core.audit.write_event(
+            "kb_chunk_promoted",
+            actor="admin",
+            chunk_id=chunk_id,
+            content_hash=content_hash,
+            production_vertex_id=vertex_id,
+        )
 
     else:  # edit_approve
         new_question: str = body.question  # type: ignore[assignment]
@@ -326,6 +338,13 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
             chunk_id=chunk_id,
             content_hash_before=original_hash,
             content_hash_after=new_hash,
+        )
+        core.audit.write_event(
+            "kb_chunk_promoted",
+            actor="admin",
+            chunk_id=chunk_id,
+            content_hash=new_hash,
+            production_vertex_id=vertex_id,
         )
 
     updated_doc = chunk_ref.get()
