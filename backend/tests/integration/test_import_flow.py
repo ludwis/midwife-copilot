@@ -158,6 +158,7 @@ def _poll_import(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="Replaced by test_post_intake.py and test_extract_function.py")
 @pytest.mark.vcr
 @pytest.mark.integration
 def test_post_upload_and_poll_until_completed(

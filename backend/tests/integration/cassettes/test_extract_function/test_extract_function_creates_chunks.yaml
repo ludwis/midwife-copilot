@@ -1,0 +1,52 @@
+interactions:
+# Gemini generateContent call via google-genai SDK with vertexai=True, location=global.
+# VCR matches on [method, host] only, so path/project/model are irrelevant.
+# Response contains one Q&A pair in Polish matching the golden WhatsApp export.
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Type:
+      - application/json
+    method: POST
+    uri: https://aiplatform.googleapis.com/v1beta1/projects/test-project/locations/global/publishers/google/models/gemini-2.0-flash:generateContent
+  response:
+    body:
+      string: >-
+        {
+          "candidates": [
+            {
+              "content": {
+                "parts": [
+                  {
+                    "text": "[{\"question\": \"Czy b\u00f3l w okolicy miednicy jest normalny w 36. tygodniu?\", \"answer\": \"Tak, b\u00f3l miednicy w 36. tygodniu jest typowy. Dziecko opuszcza si\u0119 ku do\u0142owi.\"}]"
+                  }
+                ],
+                "role": "model"
+              },
+              "finishReason": "STOP",
+              "index": 0
+            }
+          ],
+          "usageMetadata": {
+            "promptTokenCount": 120,
+            "candidatesTokenCount": 65,
+            "totalTokenCount": 185
+          },
+          "modelVersion": "gemini-2.0-flash-001"
+        }
+    headers:
+      Content-Type:
+      - application/json; charset=UTF-8
+      Vary:
+      - Origin
+      - X-Origin
+    status:
+      code: 200
+      message: OK
+version: 1

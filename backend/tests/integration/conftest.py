@@ -5,8 +5,16 @@ remains valid across project-ID or model-name changes in the Vertex AI URI.
 record_mode="none" prevents accidental real API calls — cassettes must be
 pre-recorded before running integration tests.
 """
+import os
+from typing import Any
+from unittest.mock import patch
+
 import pytest
 import google.auth.credentials
+from google.cloud import firestore
+
+_ADMIN_TOKEN = "integration-test-token"
+_PROJECT_ID = "test-project"
 
 
 class _StaticCredentials(google.auth.credentials.Credentials):
@@ -43,6 +51,35 @@ def vertexai_init() -> None:
         credentials=_StaticCredentials(),
         api_transport="rest",
     )
+
+
+@pytest.fixture(scope="module")
+def firestore_client():
+    """Firestore client directed at the local emulator.
+
+    Requires FIRESTORE_EMULATOR_HOST=localhost:8080 in the environment.
+    """
+    host = os.environ.get("FIRESTORE_EMULATOR_HOST", "localhost:8080")
+    os.environ["FIRESTORE_EMULATOR_HOST"] = host
+    client = firestore.Client(project=_PROJECT_ID)
+    yield client
+
+
+@pytest.fixture()
+def captured_audit_events() -> list[dict[str, Any]]:
+    """Capture every call to core.audit.write_event and return as a list.
+
+    Why: integration tests must verify audit events without hitting real
+    GCS/Cloud Logging. Patching at the source module intercepts any caller
+    that uses ``core.audit.write_event(...)`` directly.
+    """
+    events: list[dict[str, Any]] = []
+
+    def _capture(event_type: str, **kwargs: Any) -> None:
+        events.append({"event_type": event_type, **kwargs})
+
+    with patch("core.audit.write_event", side_effect=_capture):
+        yield events
 
 
 @pytest.fixture(scope="module")
