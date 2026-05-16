@@ -1,0 +1,47 @@
+steps:
+  - id: docker-build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:$COMMIT_SHA
+      - --tag
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:latest
+      - --file
+      - backend/Dockerfile
+      - backend/
+
+  - id: docker-push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend
+    waitFor:
+      - docker-build
+
+  - id: cloud-run-deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - stilla-backend
+      - --image
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:$COMMIT_SHA
+      - --region
+      - europe-west1
+      - --platform
+      - managed
+      - --min-instances
+      - "1"
+      - --allow-unauthenticated
+    waitFor:
+      - docker-push
+
+images:
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:$COMMIT_SHA
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
