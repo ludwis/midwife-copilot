@@ -272,6 +272,37 @@ def test_post_upload_and_poll_until_completed(
                 f"{combined_text[:120]!r}"
             )
 
+    # ── GET /api/admin/kb/chunks?status=staged ────────────────────────────────
+    chunks_resp = admin_client.get(
+        "/api/admin/kb/chunks",
+        headers={"X-Admin-Token": _ADMIN_TOKEN},
+        params={"status": "staged", "import_id": import_id},
+    )
+    assert chunks_resp.status_code == 200, (
+        f"GET /api/admin/kb/chunks returned {chunks_resp.status_code}: {chunks_resp.text}"
+    )
+    chunks_data = chunks_resp.json()
+    assert "chunks" in chunks_data, "Response must contain 'chunks' key"
+    assert "total_staged" in chunks_data, "Response must contain 'total_staged' key"
+    api_chunks = chunks_data["chunks"]
+    assert len(api_chunks) == chunks_extracted, (
+        f"API returned {len(api_chunks)} chunks but pipeline reported {chunks_extracted}"
+    )
+
+    # Each API chunk must have required fields and no PII
+    for api_chunk in api_chunks:
+        assert api_chunk.get("chunk_id"), "chunk_id must be non-empty"
+        assert api_chunk.get("question"), "question must be non-empty"
+        assert api_chunk.get("answer"), "answer must be non-empty"
+        assert api_chunk.get("status") == "staged"
+        assert api_chunk.get("staged_at"), "staged_at must be set"
+        combined = api_chunk["question"] + " " + api_chunk["answer"]
+        for pattern in _PII_PATTERNS:
+            assert not pattern.search(combined), (
+                f"PII pattern {pattern.pattern!r} found in API chunk "
+                f"{api_chunk['chunk_id']}: {combined[:120]!r}"
+            )
+
     # ── AUDIT: kb_chunk_staged events ────────────────────────────────────────
     staged_events = [
         e for e in captured_audit_events if e["event_type"] == "kb_chunk_staged"
