@@ -1,0 +1,56 @@
+interactions:
+# Gemini 2.0 Flash generateContent call via Vertex AI REST API (europe-west1).
+# The request body contains the extraction prompt with a windowed conversation.
+# The response returns a JSON array of ChunkDraft objects (question + answer).
+#
+# NOTE: conftest.py sets match_on=[method, host], so this cassette matches any
+# POST to europe-west1-aiplatform.googleapis.com regardless of project ID, model
+# version, or path. Re-record if the response schema changes.
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Content-Type:
+      - application/json
+    method: POST
+    uri: https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/google/models/gemini-2.0-flash:generateContent
+  response:
+    body:
+      string: >-
+        {
+          "candidates": [
+            {
+              "content": {
+                "parts": [
+                  {
+                    "text": "[{\"question\": \"Czy b\\u00f3l w okolicy miednicy jest normalny w 36. tygodniu?\", \"answer\": \"Tak, b\\u00f3l miednicy w 36. tygodniu jest typowy. Dziecko opuszcza si\\u0119 ku do\\u0142owi.\"}]"
+                  }
+                ],
+                "role": "model"
+              },
+              "finishReason": "STOP",
+              "index": 0
+            }
+          ],
+          "usageMetadata": {
+            "promptTokenCount": 120,
+            "candidatesTokenCount": 65,
+            "totalTokenCount": 185
+          },
+          "modelVersion": "gemini-2.0-flash-001"
+        }
+    headers:
+      Content-Type:
+      - application/json; charset=UTF-8
+      Vary:
+      - Origin
+      - X-Origin
+    status:
+      code: 200
+      message: OK
+version: 1
