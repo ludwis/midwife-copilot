@@ -8,7 +8,7 @@ The function lives in `backend/functions/` and is a separate deployment unit fro
 FastAPI backend. It shares the `bot/kb/` module code by including it in its source tree
 or via a shared package path (see implementation note below).
 
-- [ ] Create `backend/functions/requirements.txt` with all dependencies the function needs:
+- [x] Create `backend/functions/requirements.txt` with all dependencies the function needs:
   ```
   firebase-functions>=0.1.0
   firebase-admin>=6.0.0
@@ -23,7 +23,7 @@ or via a shared package path (see implementation note below).
   python-dotenv>=1.0.0
   ```
 
-- [ ] Create `backend/functions/main.py` — the Firebase Cloud Function entry point:
+- [x] Create `backend/functions/main.py` — the Firebase Cloud Function entry point:
   - Import `firebase_functions.firestore_fn` and `firebase_admin`
   - Call `firebase_admin.initialize_app()` at module level
   - Add sys.path manipulation to import from `backend/` sibling packages: `sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))` so that `bot.kb.*` and `core.*` modules resolve correctly
@@ -46,11 +46,12 @@ or via a shared package path (see implementation note below).
     14. Delete GCS file (best-effort, swallow exceptions, log warning)
   - Wrap the entire body in `try/except Exception`: on failure, update `status=failed`, `error_message`, `completed_at`, emit `kb_import_completed` with `status=failed`, attempt GCS cleanup, then re-raise (Firebase retries on uncaught exceptions)
 
-- [ ] Add a `_delete_gcs_file(gcs_uri: str) -> None` helper in `main.py`:
+- [x] Add a `_delete_gcs_file(gcs_uri: str) -> None` helper in `main.py`:
   - Parse `gs://bucket/path` from the URI
   - Call `storage.Client().bucket(bucket_name).blob(blob_path).delete()`
   - Swallow all exceptions and log a warning — never raises
 
-- [ ] Verify the function file is syntactically valid and imports resolve:
+- [x] Verify the function file is syntactically valid and imports resolve:
   - `cd backend/functions && python -c "import main"` (with `FIRESTORE_EMULATOR_HOST` and other env vars set or mocked)
   - Confirm no circular imports or missing modules
+  - **Result**: `python3 -m py_compile main.py` → clean; `import functions.main` with mocked `firebase_admin`/`firebase_functions` → `Import OK` — no circular imports or missing modules from the backend venv.
