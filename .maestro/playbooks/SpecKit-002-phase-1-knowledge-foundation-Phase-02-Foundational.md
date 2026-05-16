@@ -22,7 +22,8 @@ Implement the core infrastructure that every user story depends on: the FastAPI 
   <!-- Done: created frontend/src/main.ts — calls initializeApp(firebaseConfig) with all six VITE_FIREBASE_* env vars from import.meta.env; creates Vue app from App.vue; installs createPinia() and router; mounts to #app. -->
 - [x] T018 [P] Create `frontend/src/App.vue` (root component: `<RouterView>` wrapped in a global loading overlay that reads from `authStore.loading`)
   <!-- Done: created frontend/src/App.vue — shows a centered CSS spinner div when authStore.loading is true, renders <RouterView> otherwise. Imports useAuthStore from ./stores/auth (created by T020). Minimal scoped CSS for the spinner animation. -->
-- [ ] T019 Create `frontend/src/router/index.ts` (Vue Router createWebHistory; routes: `/` redirect to `/kb`, `/login` → LoginPage, `/kb` → KbReviewPage; navigation guard: `router.beforeEach` — if route requires auth and `authStore.isAuthenticated` is false, redirect to `/login`)
+- [x] T019 Create `frontend/src/router/index.ts` (Vue Router createWebHistory; routes: `/` redirect to `/kb`, `/login` → LoginPage, `/kb` → KbReviewPage; navigation guard: `router.beforeEach` — if route requires auth and `authStore.isAuthenticated` is false, redirect to `/login`)
+  <!-- Done: created frontend/src/router/index.ts — createWebHistory router with 3 routes (/ redirect to /kb, /login → LoginPage lazy, /kb → KbReviewPage lazy with meta.requiresAuth); beforeEach guard redirects unauthenticated users to /login when meta.requiresAuth is true. -->
 - [ ] T020 Create `frontend/src/stores/auth.ts` (Pinia store: `user` state from `onAuthStateChanged`; `signInWithGoogle()` calls `signInWithPopup(provider)` with `GoogleAuthProvider`; `signOut()`; `isAuthenticated` computed; on auth state change, reject user whose `email` does not match `VITE_ADMIN_EMAIL`; `loading` boolean true until first auth state resolved)
 
 ## Completion
