@@ -80,3 +80,100 @@ export async function getImport(id: string): Promise<ImportDetail> {
   })
   return handleResponse<ImportDetail>(res)
 }
+
+// ---- Interfaces typed per kb-review.yaml ------------------------------------
+
+export interface ChunkSummary {
+  chunk_id: string
+  question: string
+  answer: string
+  status: 'staged' | 'approved' | 'promoted' | 'discarded'
+  source_type: 'export' | 'conversation_reply'
+  import_id: string | null
+  staged_at: string
+  duplicate_flag: 'exact' | 'near' | null
+  similarity_score: number | null
+  duplicate_of: ChunkSummary | null
+}
+
+export interface ChunkDetail extends ChunkSummary {
+  content_hash: string
+  content_hash_before_edit: string | null
+  reviewed_at: string | null
+  reviewed_by: string | null
+  production_vertex_id: string | null
+  promoted_at: string | null
+}
+
+export interface ReviewAction {
+  action: 'approve' | 'edit_approve' | 'discard'
+  question?: string
+  answer?: string
+}
+
+export interface ChunksListResponse {
+  chunks: ChunkSummary[]
+  next_cursor: string | null
+  total_staged: number
+}
+
+export interface QueryResult {
+  chunk_id: string
+  question: string
+  answer: string
+  snippet: string
+  promoted_at: string | null
+}
+
+export interface QueryResponse {
+  query: string
+  results: QueryResult[]
+  total_results: number
+}
+
+// ---- Review & query API calls -----------------------------------------------
+
+export async function listChunks(params: {
+  status?: string
+  importId?: string
+  duplicateFlag?: string
+  cursor?: string
+  limit?: number
+}): Promise<ChunksListResponse> {
+  const q = new URLSearchParams()
+  if (params.status) q.set('status', params.status)
+  if (params.importId) q.set('import_id', params.importId)
+  if (params.duplicateFlag) q.set('duplicate_flag', params.duplicateFlag)
+  if (params.cursor) q.set('cursor', params.cursor)
+  if (params.limit != null) q.set('limit', String(params.limit))
+
+  const url = `${BASE_URL}/admin/kb/chunks${q.size ? `?${q}` : ''}`
+  const res = await fetch(url, { headers: getHeaders() })
+  return handleResponse<ChunksListResponse>(res)
+}
+
+export async function getChunk(id: string): Promise<ChunkDetail> {
+  const res = await fetch(`${BASE_URL}/admin/kb/chunks/${encodeURIComponent(id)}`, {
+    headers: getHeaders(),
+  })
+  return handleResponse<ChunkDetail>(res)
+}
+
+export async function reviewChunk(id: string, action: ReviewAction): Promise<ChunkDetail> {
+  const res = await fetch(`${BASE_URL}/admin/kb/chunks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: getHeaders(),
+    body: JSON.stringify(action),
+  })
+  return handleResponse<ChunkDetail>(res)
+}
+
+export async function queryProduction(q: string, limit?: number): Promise<QueryResponse> {
+  const params = new URLSearchParams({ q })
+  if (limit != null) params.set('limit', String(limit))
+
+  const res = await fetch(`${BASE_URL}/admin/kb/production/query?${params}`, {
+    headers: getHeaders(),
+  })
+  return handleResponse<QueryResponse>(res)
+}
