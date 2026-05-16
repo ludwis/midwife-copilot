@@ -1,5 +1,23 @@
 <template>
   <div class="min-h-screen bg-gray-50 p-8">
+    <!-- Toast container -->
+    <div class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      <transition-group name="toast">
+        <div
+          v-for="t in toasts"
+          :key="t.id"
+          :class="[
+            'pointer-events-auto px-4 py-3 rounded-xl shadow-lg text-sm font-medium flex items-center gap-2 max-w-xs',
+            t.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white',
+          ]"
+        >
+          <span v-if="t.type === 'success'" aria-hidden="true">✓</span>
+          <span v-else aria-hidden="true">✕</span>
+          {{ t.message }}
+        </div>
+      </transition-group>
+    </div>
+
     <div class="max-w-4xl mx-auto">
       <h1 class="text-2xl font-semibold text-gray-800 mb-6">Knowledge Base</h1>
 
@@ -103,7 +121,7 @@
             </span>
           </h2>
           <button
-            @click="kbStore.fetchStagedChunks()"
+            @click="refreshQueue"
             :disabled="loadingChunks"
             class="text-sm text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
           >
@@ -111,119 +129,159 @@
           </button>
         </div>
 
-        <div v-if="loadingChunks" class="text-sm text-gray-500 py-4">Loading…</div>
-
-        <p v-else-if="kbStore.stagedChunks.length === 0" class="text-sm text-gray-500 py-4">
-          No staged chunks pending review.
-        </p>
-
-        <div v-else class="space-y-4">
+        <!-- Queue content with overlay during load -->
+        <div class="relative">
+          <!-- Spinner overlay -->
           <div
-            v-for="chunk in kbStore.stagedChunks"
-            :key="chunk.chunk_id"
-            class="bg-white rounded-2xl shadow-md p-6"
+            v-if="loadingChunks"
+            class="absolute inset-0 z-10 flex items-center justify-center bg-gray-50/70 rounded-2xl min-h-[6rem]"
           >
-            <!-- Header row: badges + timestamp -->
-            <div class="flex items-center gap-2 mb-3 flex-wrap">
-              <!-- Source badge -->
-              <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
-                {{ chunk.source_type === 'export' ? 'Export' : 'Conversation' }}
-              </span>
+            <span class="inline-block w-6 h-6 border-2 border-gray-300 border-t-indigo-500 rounded-full animate-spin" />
+          </div>
 
-              <!-- Duplicate warning badge -->
-              <span
-                v-if="chunk.duplicate_flag"
-                class="px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 flex items-center gap-1"
-              >
-                ⚠ {{ chunk.duplicate_flag === 'exact' ? 'Exact duplicate' : 'Near duplicate' }}
-                <span v-if="chunk.similarity_score != null">({{ (chunk.similarity_score * 100).toFixed(0) }}%)</span>
-                <span v-if="chunk.duplicate_of"> — similar to {{ chunk.duplicate_of.chunk_id.slice(0, 8) }}</span>
-              </span>
+          <!-- Empty state -->
+          <div
+            v-if="!loadingChunks && kbStore.stagedChunks.length === 0"
+            class="flex flex-col items-center justify-center py-16 text-center"
+          >
+            <svg
+              class="w-16 h-16 text-gray-300 mb-4"
+              viewBox="0 0 64 64"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <rect x="8" y="12" width="48" height="40" rx="4" stroke="currentColor" stroke-width="2.5" fill="none"/>
+              <path d="M8 24h48" stroke="currentColor" stroke-width="2.5"/>
+              <path d="M20 36h24M20 43h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              <circle cx="50" cy="50" r="10" fill="#f9fafb" stroke="currentColor" stroke-width="2.5"/>
+              <path d="M50 46v4M50 52v1" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+            <p class="text-sm font-medium text-gray-500">No chunks awaiting review</p>
+            <p class="text-xs text-gray-400 mt-1">Upload a chat export to begin.</p>
+          </div>
 
-              <span class="ml-auto text-xs text-gray-400">
-                {{ formatDate(chunk.staged_at) }}
-              </span>
+          <!-- Chunk list -->
+          <div v-else-if="!loadingChunks" class="space-y-4">
+            <div
+              v-for="chunk in kbStore.stagedChunks"
+              :key="chunk.chunk_id"
+              class="bg-white rounded-2xl shadow-md p-6"
+            >
+              <!-- Header row: badges + timestamp -->
+              <div class="flex items-center gap-2 mb-3 flex-wrap">
+                <!-- Source badge -->
+                <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                  {{ chunk.source_type === 'export' ? 'Export' : 'Conversation' }}
+                </span>
+
+                <!-- Duplicate warning badge -->
+                <span
+                  v-if="chunk.duplicate_flag"
+                  class="px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 flex items-center gap-1"
+                >
+                  ⚠ {{ chunk.duplicate_flag === 'exact' ? 'Exact duplicate' : 'Near duplicate' }}
+                  <span v-if="chunk.similarity_score != null">({{ (chunk.similarity_score * 100).toFixed(0) }}%)</span>
+                  <span v-if="chunk.duplicate_of"> — similar to {{ chunk.duplicate_of.chunk_id.slice(0, 8) }}</span>
+                </span>
+
+                <span class="ml-auto text-xs text-gray-400">
+                  {{ formatDate(chunk.staged_at) }}
+                </span>
+              </div>
+
+              <!-- Edit mode -->
+              <template v-if="editingId === chunk.chunk_id">
+                <div class="space-y-3 mb-4">
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Question</label>
+                    <textarea
+                      v-model="editQuestion"
+                      rows="2"
+                      class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  </div>
+                  <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Answer</label>
+                    <textarea
+                      v-model="editAnswer"
+                      rows="4"
+                      class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  </div>
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                  <button
+                    @click="submitEditApprove(chunk.chunk_id)"
+                    :disabled="!!actionLoading[chunk.chunk_id]"
+                    class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                  >
+                    <span
+                      v-if="actionLoading[chunk.chunk_id]"
+                      class="inline-block w-3 h-3 border-2 border-green-300 border-t-white rounded-full animate-spin"
+                    />
+                    {{ actionLoading[chunk.chunk_id] ? 'Saving…' : 'Save & Approve' }}
+                  </button>
+                  <button
+                    @click="cancelEdit"
+                    :disabled="!!actionLoading[chunk.chunk_id]"
+                    class="py-1.5 px-3 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </template>
+
+              <!-- Read mode -->
+              <template v-else>
+                <div class="mb-3">
+                  <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Question</p>
+                  <p class="text-sm text-gray-800">{{ chunk.question }}</p>
+                </div>
+                <div class="mb-4">
+                  <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Answer</p>
+                  <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ chunk.answer }}</p>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="flex gap-2 flex-wrap">
+                  <button
+                    @click="handleApprove(chunk.chunk_id)"
+                    :disabled="!!actionLoading[chunk.chunk_id]"
+                    class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                  >
+                    <span
+                      v-if="actionLoading[chunk.chunk_id] === 'approve'"
+                      class="inline-block w-3 h-3 border-2 border-indigo-300 border-t-white rounded-full animate-spin"
+                    />
+                    {{ actionLoading[chunk.chunk_id] === 'approve' ? 'Approving…' : 'Approve' }}
+                  </button>
+                  <button
+                    @click="startEdit(chunk)"
+                    :disabled="!!actionLoading[chunk.chunk_id]"
+                    class="py-1.5 px-3 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                  >
+                    Edit &amp; Approve
+                  </button>
+                  <button
+                    @click="handleDiscard(chunk.chunk_id)"
+                    :disabled="!!actionLoading[chunk.chunk_id]"
+                    class="py-1.5 px-3 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                  >
+                    <span
+                      v-if="actionLoading[chunk.chunk_id] === 'discard'"
+                      class="inline-block w-3 h-3 border-2 border-red-300 border-t-white rounded-full animate-spin"
+                    />
+                    {{ actionLoading[chunk.chunk_id] === 'discard' ? 'Discarding…' : 'Discard' }}
+                  </button>
+                </div>
+              </template>
+
+              <!-- Per-chunk error -->
+              <p v-if="actionError[chunk.chunk_id]" class="mt-2 text-xs text-red-600">
+                {{ actionError[chunk.chunk_id] }}
+              </p>
             </div>
-
-            <!-- Edit mode -->
-            <template v-if="editingId === chunk.chunk_id">
-              <div class="space-y-3 mb-4">
-                <div>
-                  <label class="block text-xs font-medium text-gray-600 mb-1">Question</label>
-                  <textarea
-                    v-model="editQuestion"
-                    rows="2"
-                    class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  />
-                </div>
-                <div>
-                  <label class="block text-xs font-medium text-gray-600 mb-1">Answer</label>
-                  <textarea
-                    v-model="editAnswer"
-                    rows="4"
-                    class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  />
-                </div>
-              </div>
-              <div class="flex gap-2 flex-wrap">
-                <button
-                  @click="submitEditApprove(chunk.chunk_id)"
-                  :disabled="!!actionLoading[chunk.chunk_id]"
-                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 transition-colors"
-                >
-                  {{ actionLoading[chunk.chunk_id] ? 'Saving…' : 'Save & Approve' }}
-                </button>
-                <button
-                  @click="cancelEdit"
-                  :disabled="!!actionLoading[chunk.chunk_id]"
-                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </template>
-
-            <!-- Read mode -->
-            <template v-else>
-              <div class="mb-3">
-                <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Question</p>
-                <p class="text-sm text-gray-800">{{ chunk.question }}</p>
-              </div>
-              <div class="mb-4">
-                <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Answer</p>
-                <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ chunk.answer }}</p>
-              </div>
-
-              <!-- Action buttons -->
-              <div class="flex gap-2 flex-wrap">
-                <button
-                  @click="handleApprove(chunk.chunk_id)"
-                  :disabled="!!actionLoading[chunk.chunk_id]"
-                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors"
-                >
-                  {{ actionLoading[chunk.chunk_id] === 'approve' ? 'Approving…' : 'Approve' }}
-                </button>
-                <button
-                  @click="startEdit(chunk)"
-                  :disabled="!!actionLoading[chunk.chunk_id]"
-                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
-                >
-                  Edit &amp; Approve
-                </button>
-                <button
-                  @click="handleDiscard(chunk.chunk_id)"
-                  :disabled="!!actionLoading[chunk.chunk_id]"
-                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-50 transition-colors"
-                >
-                  {{ actionLoading[chunk.chunk_id] === 'discard' ? 'Discarding…' : 'Discard' }}
-                </button>
-              </div>
-            </template>
-
-            <!-- Per-chunk error -->
-            <p v-if="actionError[chunk.chunk_id]" class="mt-2 text-xs text-red-600">
-              {{ actionError[chunk.chunk_id] }}
-            </p>
           </div>
         </div>
 
@@ -289,7 +347,26 @@ import { createImport, getImport } from '../services/api'
 import type { ImportDetail, ChunkSummary, QueryResult } from '../services/api'
 import { useKbStore } from '../stores/kb'
 
-// ---- Upload logic (unchanged) -----------------------------------------------
+// ---- Toast system -----------------------------------------------------------
+
+interface Toast {
+  id: number
+  message: string
+  type: 'success' | 'error'
+}
+
+let toastSeq = 0
+const toasts = ref<Toast[]>([])
+
+function addToast(message: string, type: 'success' | 'error') {
+  const id = ++toastSeq
+  toasts.value.push({ id, message, type })
+  setTimeout(() => {
+    toasts.value = toasts.value.filter((t) => t.id !== id)
+  }, 3500)
+}
+
+// ---- Upload logic -----------------------------------------------------------
 
 const selectedFile = ref<File | null>(null)
 const sourceFormat = ref<'whatsapp_txt' | 'messenger_json'>('whatsapp_txt')
@@ -334,9 +411,11 @@ function startPolling(id: string) {
       importDetail.value = detail
       if (TERMINAL_STATUSES.has(detail.status)) {
         stopPolling()
-        // Refresh review queue when import completes
         if (detail.status === 'completed') {
+          addToast(`Import complete — ${detail.chunks_extracted ?? 0} chunks extracted`, 'success')
           kbStore.fetchStagedChunks()
+        } else if (detail.status === 'failed') {
+          addToast(detail.error_message ?? 'Import failed', 'error')
         }
       }
     } catch {
@@ -396,6 +475,15 @@ onMounted(async () => {
   }
 })
 
+async function refreshQueue() {
+  loadingChunks.value = true
+  try {
+    await kbStore.fetchStagedChunks()
+  } finally {
+    loadingChunks.value = false
+  }
+}
+
 async function loadMore() {
   loadingMore.value = true
   try {
@@ -410,8 +498,11 @@ async function handleApprove(id: string) {
   delete actionError[id]
   try {
     await kbStore.approveChunk(id)
+    addToast('Chunk approved', 'success')
   } catch (err: unknown) {
-    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+    const msg = err instanceof Error ? err.message : 'Action failed.'
+    actionError[id] = msg
+    addToast(msg, 'error')
   } finally {
     actionLoading[id] = false
   }
@@ -422,8 +513,11 @@ async function handleDiscard(id: string) {
   delete actionError[id]
   try {
     await kbStore.discardChunk(id)
+    addToast('Chunk discarded', 'success')
   } catch (err: unknown) {
-    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+    const msg = err instanceof Error ? err.message : 'Action failed.'
+    actionError[id] = msg
+    addToast(msg, 'error')
   } finally {
     actionLoading[id] = false
   }
@@ -447,8 +541,11 @@ async function submitEditApprove(id: string) {
   try {
     await kbStore.editApproveChunk(id, editQuestion.value, editAnswer.value)
     cancelEdit()
+    addToast('Chunk edited and approved', 'success')
   } catch (err: unknown) {
-    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+    const msg = err instanceof Error ? err.message : 'Action failed.'
+    actionError[id] = msg
+    addToast(msg, 'error')
   } finally {
     actionLoading[id] = false
   }
@@ -485,3 +582,15 @@ async function runQuery() {
   }
 }
 </script>
+
+<style scoped>
+.toast-enter-active,
+.toast-leave-active {
+  transition: all 0.25s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(1rem);
+}
+</style>
