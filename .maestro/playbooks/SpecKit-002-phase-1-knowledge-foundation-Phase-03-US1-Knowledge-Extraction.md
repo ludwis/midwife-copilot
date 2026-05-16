@@ -55,7 +55,8 @@ Implement the full extraction pipeline: WhatsApp and Messenger parsers, PII stri
 
 ## Completion
 
-- [ ] Unit tests pass: `pytest backend/tests/unit/` (T021–T024)
+- [x] Unit tests pass: `pytest backend/tests/unit/` (T021–T024)
+  <!-- 61/61 tests passed in 3.13s (2026-05-16). All parsers, PII stripper, and deduplicator unit tests green. -->
 - [ ] Integration test passes with Firestore emulator running on :8080: `pytest backend/tests/integration/test_import_flow.py`
 - [ ] POST `golden_whatsapp_export.txt` to `/api/admin/kb/imports`, poll until `status=completed`, GET `/api/admin/kb/chunks?status=staged` — confirm chunks present with PII replaced by Polish placeholders
 - [ ] Verify no personal identifiers (names, phone numbers, emails) visible in any staged chunk
