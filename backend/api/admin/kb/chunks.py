@@ -1,6 +1,6 @@
-"""GET /api/admin/kb/chunks — List knowledge chunks, filterable by status.
+"""GET /api/admin/kb/chunks — List and retrieve knowledge chunks.
 
-Implements the listChunks operation from kb-review.yaml.
+Implements listChunks and getChunk from kb-review.yaml.
 Auth: inherited from /api/admin router (X-Admin-Token via main.py).
 
 Env vars:
@@ -8,6 +8,7 @@ Env vars:
 """
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -56,7 +57,31 @@ def _doc_to_summary(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "staged_at": _ts_to_str(data.get("staged_at")),
         "duplicate_flag": data.get("duplicate_flag"),
         "similarity_score": data.get("similarity_score"),
+        "duplicate_of": None,
     }
+
+
+def _doc_to_detail(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    detail = _doc_to_summary(doc_id, data)
+    detail.update(
+        {
+            "content_hash": data.get("content_hash"),
+            "content_hash_before_edit": data.get("content_hash_before_edit"),
+            "reviewed_at": _ts_to_str(data.get("reviewed_at")),
+            "reviewed_by": data.get("reviewed_by"),
+            "production_vertex_id": data.get("production_vertex_id"),
+            "promoted_at": _ts_to_str(data.get("promoted_at")),
+        }
+    )
+    return detail
+
+
+def _encode_cursor(chunk_id: str) -> str:
+    return base64.urlsafe_b64encode(chunk_id.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> str:
+    return base64.urlsafe_b64decode(cursor.encode()).decode()
 
 
 @router.get("/chunks")
@@ -65,8 +90,9 @@ async def list_chunks(
     import_id: str | None = None,
     duplicate_flag: str | None = None,
     limit: int = 50,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
-    """Return knowledge chunks, newest-first, with optional filters."""
+    """Return knowledge chunks, newest-first, with optional filters and cursor pagination."""
     if status is not None and status not in _VALID_STATUSES:
         raise HTTPException(
             status_code=400,
@@ -90,8 +116,32 @@ async def list_chunks(
     if duplicate_flag is not None:
         query = query.where("duplicate_flag", "==", duplicate_flag)
 
-    docs = list(query.limit(limit).stream())
-    chunks = [_doc_to_summary(doc.id, doc.to_dict()) for doc in docs]
+    # Apply cursor pagination: decode cursor → fetch snapshot → start_after
+    if cursor is not None:
+        try:
+            cursor_chunk_id = _decode_cursor(cursor)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid pagination cursor.")
+        cursor_doc = db.collection("kb_chunks").document(cursor_chunk_id).get()
+        if cursor_doc.exists:
+            query = query.start_after(cursor_doc)
+
+    docs = list(query.limit(limit + 1).stream())
+
+    # Determine if there is a next page
+    has_more = len(docs) > limit
+    page_docs = docs[:limit]
+
+    chunks = [_doc_to_summary(doc.id, doc.to_dict()) for doc in page_docs]
+
+    # Embed duplicate_of summary for flagged chunks
+    for i, doc in enumerate(page_docs):
+        data = doc.to_dict()
+        dup_id = data.get("duplicate_of_chunk_id")
+        if data.get("duplicate_flag") and dup_id:
+            dup_doc = db.collection("kb_chunks").document(dup_id).get()
+            if dup_doc.exists:
+                chunks[i]["duplicate_of"] = _doc_to_summary(dup_doc.id, dup_doc.to_dict())
 
     # Count total staged chunks for the review-queue badge
     total_staged_count = (
@@ -102,8 +152,31 @@ async def list_chunks(
         .value
     )
 
+    next_cursor = _encode_cursor(page_docs[-1].id) if has_more and page_docs else None
+
     return {
         "chunks": chunks,
-        "next_cursor": None,
+        "next_cursor": next_cursor,
         "total_staged": total_staged_count,
     }
+
+
+@router.get("/chunks/{chunk_id}")
+async def get_chunk(chunk_id: str) -> dict[str, Any]:
+    """Return full ChunkDetail for a single knowledge chunk."""
+    db = _get_firestore()
+    doc = db.collection("kb_chunks").document(chunk_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id!r} not found.")
+
+    data = doc.to_dict()
+    detail = _doc_to_detail(doc.id, data)
+
+    # Embed duplicate_of summary if flagged
+    dup_id = data.get("duplicate_of_chunk_id")
+    if data.get("duplicate_flag") and dup_id:
+        dup_doc = db.collection("kb_chunks").document(dup_id).get()
+        if dup_doc.exists:
+            detail["duplicate_of"] = _doc_to_summary(dup_doc.id, dup_doc.to_dict())
+
+    return detail
