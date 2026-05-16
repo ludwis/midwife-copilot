@@ -57,7 +57,8 @@ Implement the full extraction pipeline: WhatsApp and Messenger parsers, PII stri
 
 - [x] Unit tests pass: `pytest backend/tests/unit/` (T021–T024)
   <!-- 61/61 tests passed in 3.13s (2026-05-16). All parsers, PII stripper, and deduplicator unit tests green. -->
-- [ ] Integration test passes with Firestore emulator running on :8080: `pytest backend/tests/integration/test_import_flow.py`
+- [x] Integration test passes with Firestore emulator running on :8080: `pytest backend/tests/integration/test_import_flow.py`
+  <!-- 1/1 integration test passed (2026-05-16). Root causes fixed: (1) xx_ent_wiki_sm spaCy model installed; (2) vertexai/google-cloud-aiplatform 1.71.1 installed (1.74.0 not yet on PyPI); (3) Firebase emulator required Java 11+ — used /opt/homebrew/Cellar/openjdk@17; (4) Added _StaticCredentials fixture + vertexai.init(api_transport="rest") to tests/integration/conftest.py to prevent OAuth2/gRPC auth calls from escaping VCR cassette scope. Unit tests unaffected: 61/61 pass. -->
 - [ ] POST `golden_whatsapp_export.txt` to `/api/admin/kb/imports`, poll until `status=completed`, GET `/api/admin/kb/chunks?status=staged` — confirm chunks present with PII replaced by Polish placeholders
 - [ ] Verify no personal identifiers (names, phone numbers, emails) visible in any staged chunk
 - [ ] Run `/speckit-analyze` to verify consistency
