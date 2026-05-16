@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -495,3 +496,90 @@ def test_seed_5_review_mix_promoted_count_is_3(
     # ---- Verify chunk[4] is still staged ----
     doc4 = firestore_client.collection("kb_chunks").document(chunk_ids[4]).get()
     assert doc4.to_dict()["status"] == "staged"
+
+
+@pytest.mark.integration
+def test_production_query_returns_results(
+    admin_client: TestClient,
+    captured_audit_events: list[dict[str, Any]],
+):
+    """GET /api/admin/kb/production/query?q=... → 200 with mapped results.
+
+    Why: The production query endpoint is the midwife's QA tool to confirm
+    promoted knowledge is retrievable. Mocking the Discovery Engine client
+    verifies routing, response mapping, and audit event emission without
+    needing live GCP infrastructure.
+    """
+    # Build a minimal fake Vertex AI Search result
+    mock_struct_field_q = MagicMock()
+    mock_struct_field_q.string_value = "What is normal pelvic pressure at 36 weeks?"
+    mock_struct_field_a = MagicMock()
+    mock_struct_field_a.string_value = "Pelvic pressure is common in the third trimester."
+    mock_struct_field_at = MagicMock()
+    mock_struct_field_at.string_value = "2026-05-16T00:00:00Z"
+
+    fake_doc = MagicMock()
+    fake_doc.id = "chunk-vertex-001"
+    fake_doc.struct_data.fields = {
+        "question": mock_struct_field_q,
+        "answer": mock_struct_field_a,
+        "promoted_at": mock_struct_field_at,
+    }
+    # No extractive answers — snippet remains empty string
+    fake_doc.derived_struct_data.fields = {}
+
+    fake_result = MagicMock()
+    fake_result.document = fake_doc
+
+    fake_response = MagicMock()
+    fake_response.results = [fake_result]
+
+    # discoveryengine_v1 is not installed in the test env; inject a mock module
+    mock_de_module = MagicMock()
+    mock_search_client = MagicMock()
+    mock_search_client.search.return_value = fake_response
+    mock_de_module.SearchServiceClient.return_value = mock_search_client
+
+    fake_modules = {
+        "google.cloud.discoveryengine_v1": mock_de_module,
+    }
+    with patch.dict(sys.modules, fake_modules):
+        resp = admin_client.get(
+            "/api/admin/kb/production/query",
+            headers={"X-Admin-Token": _ADMIN_TOKEN},
+            params={"q": "pelvic pressure third trimester"},
+        )
+
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["query"] == "pelvic pressure third trimester"
+    assert body["total_results"] == 1
+    assert len(body["results"]) == 1
+    result = body["results"][0]
+    assert result["chunk_id"] == "chunk-vertex-001"
+    assert result["question"] == "What is normal pelvic pressure at 36 weeks?"
+    assert result["answer"] == "Pelvic pressure is common in the third trimester."
+
+    # Audit event must be emitted
+    query_events = [e for e in captured_audit_events if e["event_type"] == "kb_query_test"]
+    assert len(query_events) >= 1
+    last_event = query_events[-1]
+    assert last_event["query_text"] == "pelvic pressure third trimester"
+    assert last_event["result_count"] == 1
+
+
+@pytest.mark.integration
+def test_production_query_returns_400_for_missing_q(
+    admin_client: TestClient,
+    captured_audit_events: list[dict[str, Any]],  # noqa: ARG001
+):
+    """GET /api/admin/kb/production/query without q → 400.
+
+    Why: The endpoint must reject blank queries before touching Vertex AI.
+    This guards against accidental empty searches that consume quota.
+    """
+    resp = admin_client.get(
+        "/api/admin/kb/production/query",
+        headers={"X-Admin-Token": _ADMIN_TOKEN},
+    )
+    assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
