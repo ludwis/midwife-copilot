@@ -6,4 +6,7 @@ under /api/admin.
 """
 from fastapi import APIRouter
 
+from .imports import router as imports_router
+
 router = APIRouter(prefix="/kb", tags=["kb"])
+router.include_router(imports_router)
