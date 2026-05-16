@@ -33,7 +33,8 @@ Implement the review-and-promotion pipeline: backend chunk promotion writer, GET
 
 - [x] Integration tests pass: `pytest backend/tests/integration/test_review_actions.py backend/tests/integration/test_kb_pipeline.py`
   <!-- Verified 2026-05-16: 6/6 tests passed (5 review_actions + 1 kb_pipeline golden dataset) -->
-- [ ] Seed 5 staged chunks; approve 2, edit-approve 1, discard 1; verify `GET /api/admin/kb/chunks?status=promoted` returns 3
+- [x] Seed 5 staged chunks; approve 2, edit-approve 1, discard 1; verify `GET /api/admin/kb/chunks?status=promoted` returns 3
+  <!-- Verified 2026-05-16: test_seed_5_review_mix_promoted_count_is_3 added to test_review_actions.py; 6/6 tests pass. Used UUID-based import_id to isolate from residual emulator state. -->
 - [ ] Query `GET /api/admin/kb/production/query?q=<midwifery question>` and confirm promoted chunks are returned
 - [ ] 409 is returned on second PATCH to already-actioned chunk
 - [ ] Run `/speckit-analyze` to verify consistency
