@@ -1,6 +1,6 @@
-"""GET /api/admin/kb/chunks — List and retrieve knowledge chunks.
+"""GET /PATCH /api/admin/kb/chunks — List, retrieve, and review knowledge chunks.
 
-Implements listChunks and getChunk from kb-review.yaml.
+Implements listChunks, getChunk, and reviewChunk from kb-review.yaml.
 Auth: inherited from /api/admin router (X-Admin-Token via main.py).
 
 Env vars:
@@ -9,15 +9,48 @@ Env vars:
 from __future__ import annotations
 
 import base64
-from typing import Any
+import hashlib
+from datetime import datetime, timezone
+from typing import Any, Optional
 
+import core.audit
+import bot.kb.promotion as _promotion
 from fastapi import APIRouter, HTTPException
 from google.cloud import firestore
+from pydantic import BaseModel
 
 router = APIRouter()
 
 _VALID_STATUSES = {"staged", "approved", "promoted", "discarded"}
 _VALID_DUP_FLAGS = {"exact", "near"}
+_VALID_ACTIONS = {"approve", "edit_approve", "discard"}
+
+
+class ReviewActionBody(BaseModel):
+    action: str
+    question: Optional[str] = None
+    answer: Optional[str] = None
+
+
+class _ChunkConflict(Exception):
+    """Raised inside a Firestore transaction when the chunk is no longer staged."""
+
+
+@firestore.transactional
+def _commit_review(
+    transaction: firestore.Transaction,
+    chunk_ref: firestore.DocumentReference,
+    updates: dict[str, Any],
+) -> None:
+    """Read chunk in transaction, assert staged, apply updates.
+
+    Raises _ChunkConflict if the chunk is no longer in staged status —
+    guards against concurrent review races.
+    """
+    snap = chunk_ref.get(transaction=transaction)
+    if snap.exists and snap.to_dict().get("status") != "staged":
+        raise _ChunkConflict(snap.to_dict().get("status"))
+    transaction.update(chunk_ref, updates)
 
 # Lazy Firestore singleton (same pattern as imports.py / staging.py)
 _firestore_client: firestore.Client | None = None
@@ -180,3 +213,120 @@ async def get_chunk(chunk_id: str) -> dict[str, Any]:
             detail["duplicate_of"] = _doc_to_summary(dup_doc.id, dup_doc.to_dict())
 
     return detail
+
+
+@router.patch("/chunks/{chunk_id}")
+async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
+    """Apply a review action (approve / edit_approve / discard) to a staged chunk.
+
+    Raises:
+        400 — invalid action, or edit_approve missing question/answer
+        404 — chunk not found
+        409 — chunk already actioned (concurrent review race)
+    """
+    if body.action not in _VALID_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action {body.action!r}. Must be one of {sorted(_VALID_ACTIONS)}.",
+        )
+    if body.action == "edit_approve" and (not body.question or not body.answer):
+        raise HTTPException(
+            status_code=400,
+            detail="edit_approve requires both 'question' and 'answer' fields.",
+        )
+
+    db = _get_firestore()
+    chunk_ref = db.collection("kb_chunks").document(chunk_id)
+
+    doc = chunk_ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id!r} not found.")
+
+    data = doc.to_dict()
+
+    # Pre-check: fast 409 before any external calls when chunk is already actioned.
+    if data.get("status") != "staged":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Chunk {chunk_id!r} is in {data.get('status')!r} status and cannot be reviewed.",
+        )
+
+    now = datetime.now(timezone.utc)
+    updates: dict[str, Any] = {"reviewed_at": now}
+
+    if body.action == "discard":
+        updates["status"] = "discarded"
+
+        try:
+            _commit_review(db.transaction(), chunk_ref, updates)
+        except _ChunkConflict as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+            )
+
+        core.audit.write_event("kb_chunk_discarded", actor="admin", chunk_id=chunk_id)
+
+    elif body.action == "approve":
+        question = data["question"]
+        answer = data["answer"]
+        content_hash = data["content_hash"]
+
+        vertex_id = await _promotion.promote_chunk(chunk_id, question, answer, content_hash)
+
+        updates.update(
+            {
+                "status": "promoted",
+                "production_vertex_id": vertex_id,
+                "promoted_at": now,
+            }
+        )
+
+        try:
+            _commit_review(db.transaction(), chunk_ref, updates)
+        except _ChunkConflict as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+            )
+
+        core.audit.write_event("kb_chunk_approved", actor="admin", chunk_id=chunk_id)
+
+    else:  # edit_approve
+        new_question: str = body.question  # type: ignore[assignment]
+        new_answer: str = body.answer  # type: ignore[assignment]
+        original_hash = data["content_hash"]
+        new_hash = hashlib.sha256((new_question + "\n" + new_answer).encode()).hexdigest()
+
+        vertex_id = await _promotion.promote_chunk(chunk_id, new_question, new_answer, new_hash)
+
+        updates.update(
+            {
+                "status": "promoted",
+                "question": new_question,
+                "answer": new_answer,
+                "content_hash": new_hash,
+                "content_hash_before_edit": original_hash,
+                "production_vertex_id": vertex_id,
+                "promoted_at": now,
+            }
+        )
+
+        try:
+            _commit_review(db.transaction(), chunk_ref, updates)
+        except _ChunkConflict as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Chunk {chunk_id!r} was concurrently actioned (status={exc}).",
+            )
+
+        core.audit.write_event(
+            "kb_chunk_edited",
+            actor="admin",
+            chunk_id=chunk_id,
+            content_hash_before=original_hash,
+            content_hash_after=new_hash,
+        )
+
+    updated_doc = chunk_ref.get()
+    return _doc_to_detail(chunk_id, updated_doc.to_dict())
