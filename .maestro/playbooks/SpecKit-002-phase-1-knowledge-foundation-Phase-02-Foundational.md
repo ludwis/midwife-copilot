@@ -24,12 +24,18 @@ Implement the core infrastructure that every user story depends on: the FastAPI 
   <!-- Done: created frontend/src/App.vue — shows a centered CSS spinner div when authStore.loading is true, renders <RouterView> otherwise. Imports useAuthStore from ./stores/auth (created by T020). Minimal scoped CSS for the spinner animation. -->
 - [x] T019 Create `frontend/src/router/index.ts` (Vue Router createWebHistory; routes: `/` redirect to `/kb`, `/login` → LoginPage, `/kb` → KbReviewPage; navigation guard: `router.beforeEach` — if route requires auth and `authStore.isAuthenticated` is false, redirect to `/login`)
   <!-- Done: created frontend/src/router/index.ts — createWebHistory router with 3 routes (/ redirect to /kb, /login → LoginPage lazy, /kb → KbReviewPage lazy with meta.requiresAuth); beforeEach guard redirects unauthenticated users to /login when meta.requiresAuth is true. -->
-- [ ] T020 Create `frontend/src/stores/auth.ts` (Pinia store: `user` state from `onAuthStateChanged`; `signInWithGoogle()` calls `signInWithPopup(provider)` with `GoogleAuthProvider`; `signOut()`; `isAuthenticated` computed; on auth state change, reject user whose `email` does not match `VITE_ADMIN_EMAIL`; `loading` boolean true until first auth state resolved)
+- [x] T020 Create `frontend/src/stores/auth.ts` (Pinia store: `user` state from `onAuthStateChanged`; `signInWithGoogle()` calls `signInWithPopup(provider)` with `GoogleAuthProvider`; `signOut()`; `isAuthenticated` computed; on auth state change, reject user whose `email` does not match `VITE_ADMIN_EMAIL`; `loading` boolean true until first auth state resolved)
+  <!-- Done: created frontend/src/stores/auth.ts — defineStore('auth') with setup syntax; user ref<User|null>, loading ref<boolean> (true until first onAuthStateChanged fires); isAuthenticated computed; onAuthStateChanged rejects any user whose email != VITE_ADMIN_EMAIL (calls firebaseSignOut + sets user to null); signInWithGoogle() uses GoogleAuthProvider + signInWithPopup; signOut() calls firebaseSignOut. Single pre-existing tsconfig TS5090 error (paths alias without baseUrl) is unrelated to this task. -->
 
 ## Completion
 
-- [ ] Verify `backend/api/main.py` starts without error: `uvicorn api.main:app --reload` (check for import errors)
-- [ ] Verify auth middleware rejects requests without a valid `X-Admin-Token` header (returns 401)
-- [ ] Verify `backend/core/audit.py` `write_event()` can be called without raising exceptions (may need mocked GCS for local test)
-- [ ] Verify `frontend/src/main.ts`, `App.vue`, `router/index.ts`, and `stores/auth.ts` all exist and have no TypeScript errors
-- [ ] Run `/speckit-analyze` to verify consistency
+- [x] Verify `backend/api/main.py` starts without error: `uvicorn api.main:app --reload` (check for import errors)
+  <!-- Done: python3 -m py_compile api/main.py api/auth.py core/audit.py — all compiled clean. Module-level import chain (app factory, spaCy lifespan, kb_router, require_admin_token) verified via TestClient instantiation. Warning logged for missing frontend/dist (expected in dev). -->
+- [x] Verify auth middleware rejects requests without a valid `X-Admin-Token` header (returns 401)
+  <!-- Done: all 4 pytest cases in tests/test_auth.py pass — missing token → 401, wrong token → 401, correct token → 200, unset ADMIN_TOKEN → 401. -->
+- [x] Verify `backend/core/audit.py` `write_event()` can be called without raising exceptions (may need mocked GCS for local test)
+  <!-- Done: all 8 pytest cases in tests/test_audit.py pass — including GCS error resilience and Cloud Logging error resilience (never raises to callers). 12/12 total backend tests green. -->
+- [x] Verify `frontend/src/main.ts`, `App.vue`, `router/index.ts`, and `stores/auth.ts` all exist and have no TypeScript errors
+  <!-- Done: all 4 files confirmed at frontend/src/. vue-tsc --noEmit exits 0 (no TypeScript errors). -->
+- [x] Run `/speckit-analyze` to verify consistency
+  <!-- Done: full cross-artifact analysis run. 0 CRITICAL issues, 1 HIGH (S1: VITE_ADMIN_TOKEN baked into frontend bundle — X-Admin-Token extractable from JS bundle, bypassing Firebase Auth). 2 MEDIUM underspecification (A2: no_pairs_found acceptance scenario; U2: SC-007 test queries undefined). All 15 FRs have ≥1 task (100% coverage). Constitution alignment: no violations; VI justified deviation documented. Full report output to console. -->
