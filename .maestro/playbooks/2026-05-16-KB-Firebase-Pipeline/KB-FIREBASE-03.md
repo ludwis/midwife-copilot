@@ -3,7 +3,7 @@
 Wire the Firebase Function into `firebase.json`, add the GCS imports bucket to
 `cloudbuild.yaml`, and update `.env` with the new env var.
 
-- [ ] Update `firebase.json` to add the `functions` configuration block:
+- [x] Update `firebase.json` to add the `functions` configuration block:
   - Add a `"functions"` key at the top level with:
     - `"source": "backend/functions"` — points to the function source directory
     - `"runtime": "python312"` — Python 3.12 runtime (matches backend)
@@ -11,14 +11,14 @@ Wire the Firebase Function into `firebase.json`, add the GCS imports bucket to
   - Keep all existing `hosting` and `emulators` config unchanged
   - Run `cat firebase.json` first to confirm current structure before editing
 
-- [ ] Update `backend/.env` — add one new env var:
+- [x] Update `backend/.env` — add one new env var:
   ```
   # ── KB Import File Storage ────────────────────────────────────────────────────
   # GCS bucket for temporary chat export files (deleted after extraction)
   KB_IMPORTS_BUCKET_NAME=midwife-copilot-kb-imports-dev
   ```
 
-- [ ] Update `cloudbuild.yaml` to:
+- [x] Update `cloudbuild.yaml` to:
   - Add `_KB_IMPORTS_BUCKET_NAME: midwife-copilot-kb-imports-dev` to the `substitutions` block (or create one if absent)
   - Add a `create-kb-imports-bucket` step after the existing audit bucket step:
     ```yaml
@@ -45,7 +45,7 @@ Wire the Firebase Function into `firebase.json`, add the GCS imports bucket to
     ```
   - Read `cloudbuild.yaml` first to understand the current step structure and `waitFor` chain before editing
 
-- [ ] Verify config correctness:
+- [x] Verify config correctness:
   - `python -c "import json; json.load(open('firebase.json'))"` — valid JSON
   - `grep KB_IMPORTS_BUCKET_NAME backend/.env` — var present
   - `grep KB_IMPORTS_BUCKET_NAME cloudbuild.yaml` — bucket creation step present

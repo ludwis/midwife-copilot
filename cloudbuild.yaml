@@ -1,5 +1,6 @@
 substitutions:
   _AUDIT_BUCKET_NAME: midwife-bot-audit-dev
+  _KB_IMPORTS_BUCKET_NAME: midwife-copilot-kb-imports-dev
 
 steps:
   # ---------------------------------------------------------------------------
@@ -33,6 +34,20 @@ steps:
   #        gsutil retention set 7y gs://midwife-bot-audit-prod
   #        gsutil retention lock gs://midwife-bot-audit-prod
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # KB imports bucket — dev (CI-active)
+  # Creates the temporary-upload bucket; files auto-deleted after 7 days.
+  # ---------------------------------------------------------------------------
+  - id: create-kb-imports-bucket
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gsutil mb -l europe-west1 gs://$_KB_IMPORTS_BUCKET_NAME || true
+        echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":7}}]}' | \
+          gsutil lifecycle set /dev/stdin gs://$_KB_IMPORTS_BUCKET_NAME
 
   - id: docker-build
     name: gcr.io/cloud-builders/docker
@@ -73,6 +88,20 @@ steps:
       - --allow-unauthenticated
     waitFor:
       - docker-push
+
+  # ---------------------------------------------------------------------------
+  # Deploy Firebase Functions
+  # ---------------------------------------------------------------------------
+  - id: deploy-functions
+    name: node:20
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        npm install -g firebase-tools
+        firebase deploy --only functions --project $PROJECT_ID --non-interactive
+    waitFor:
+      - cloud-run-deploy
 
 images:
   - europe-west1-docker.pkg.dev/$PROJECT_ID/stilla/backend:$COMMIT_SHA
