@@ -16,7 +16,7 @@ Scaffold the complete project directory structure, dependency manifests, configu
 - [x] T002 Create `backend/requirements.txt` with all required packages: FastAPI, uvicorn[standard], spacy, pydantic>=2, google-cloud-firestore, google-cloud-storage, google-cloud-aiplatform, google-cloud-discoveryengine, vertexai, pytest, pytest-recording, httpx
 - [x] T003 [P] Create `.env.example` with all Phase 1 env vars: `VERTEX_SEARCH_DATASTORE_PRODUCTION`, `VERTEX_SEARCH_DATASTORE_STAGING`, `VERTEX_SEARCH_LOCATION`, `GCP_PROJECT_ID`, `GCP_REGION`, `ADMIN_TOKEN`, `AUDIT_BUCKET_NAME`, `FIRESTORE_EMULATOR_HOST`, `GEMINI_MODEL`, `SPACY_MODEL`, `DUPLICATE_SIMILARITY_THRESHOLD`, `VITE_ADMIN_EMAIL`, `VITE_ADMIN_TOKEN`
 - [x] T004 [P] Create `frontend/package.json` with deps: vue@3, typescript, vite, @vitejs/plugin-vue, tailwindcss, autoprefixer, pinia, vue-router, vite-plugin-pwa, firebase@10
-- [ ] T005 [P] Create `frontend/vite.config.ts` (Vue plugin + PWA plugin; server proxy `/api` → `http://localhost:8000`; build output to `dist/`)
+- [x] T005 [P] Create `frontend/vite.config.ts` (Vue plugin + PWA plugin; server proxy `/api` → `http://localhost:8000`; build output to `dist/`)
 - [ ] T006 [P] Create `frontend/tailwind.config.ts` (content paths covering `src/**/*.{vue,ts}`)
 - [ ] T007 [P] Create `frontend/tsconfig.json` (target ES2022, module ESNext, strict true, paths alias `@/` → `src/`)
 - [ ] T008 [P] Create `firebase.json` (hosting: public `frontend/dist`, rewrites all → index.html; emulators: auth on 9099, firestore on 8080)
