@@ -20,4 +20,4 @@ Author the two compliance documents required before Phase 3 (WhatsApp Integratio
 - [x] Verify `docs/compliance-framework.md` answers all four questions: (1) what consent message text does the client receive? (2) how is AI involvement disclosed? (3) what are the retention periods? (4) what is the erasure procedure step-by-step?
 - [x] Verify `docs/whatsapp-registration-status.md` documents all 5 registration steps and includes the fallback risk note
 - [x] Verify the compliance framework review sign-off section is present (SC-005)
-- [ ] Run `/speckit-analyze` to verify consistency
+- [x] Run `/speckit-analyze` to verify consistency — 0 critical issues, 0 constitution violations, 100% FR/SC coverage. 3 medium gaps flagged: tasks.md T046/T047 checkbox state (C1), SC-002 measurement instrumentation (B1), SC-005 sign-off gate (E1). Safe to proceed to `/speckit-implement`.
