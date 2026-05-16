@@ -12,6 +12,7 @@ Env vars:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -125,8 +126,9 @@ async def _run_pipeline(
             stripped_content, _flag = strip_pii(turn["content"])
             stripped_turns.append({**turn, "content": stripped_content})
 
-        # 3. Gemini Q&A extraction
-        chunks = extract_qa_pairs(stripped_turns)
+        # 3. Gemini Q&A extraction — run synchronous Gemini calls in a thread
+        #    pool so the asyncio event loop remains free to serve other requests.
+        chunks = await asyncio.to_thread(extract_qa_pairs, stripped_turns)
 
         if not chunks:
             now = datetime.now(timezone.utc)
@@ -292,7 +294,7 @@ async def list_imports(
         "submitted_at", direction=firestore.Query.DESCENDING
     )
     if status is not None:
-        query = query.where("status", "==", status)
+        query = query.where(filter=firestore.FieldFilter("status", "==", status))
 
     docs = list(query.limit(limit).stream())
 

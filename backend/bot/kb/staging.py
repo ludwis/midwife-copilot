@@ -90,9 +90,9 @@ async def _write_vertex_staging(
     from google.cloud import discoveryengine_v1 as discoveryengine  # type: ignore[import]
     from google.protobuf import struct_pb2
 
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-    location = os.environ.get("VERTEX_LOCATION", "eu")
-    data_store = os.environ.get("VERTEX_STAGING_DATA_STORE", "midwife-staging")
+    project = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    location = os.environ.get("VERTEX_SEARCH_LOCATION") or os.environ.get("VERTEX_LOCATION", "eu")
+    data_store = os.environ.get("VERTEX_SEARCH_DATASTORE_STAGING") or os.environ.get("VERTEX_STAGING_DATA_STORE", "midwife-staging")
 
     parent = (
         f"projects/{project}/locations/{location}"
@@ -107,6 +107,7 @@ async def _write_vertex_staging(
         {
             "question": draft.question,
             "answer": draft.answer,
+            "language": draft.language,
             "source_type": "export",
             "import_id": import_id,
             "content_hash": content_hash,
@@ -186,6 +187,7 @@ async def stage_chunks(
         doc_data: dict[str, Any] = {
             "question": draft.question,
             "answer": draft.answer,
+            "language": draft.language,
             "content_hash": c_hash,
             "source_type": "export",
             "import_id": import_id,

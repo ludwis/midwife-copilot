@@ -16,7 +16,7 @@ related:
 # Compliance Framework — Stilla Midwife Co-pilot
 
 **Version**: 1.0-draft
-**Status**: Pending review (see §Review Sign-off)
+**Status**: Reviewed (see §Review Sign-off)
 **Prepared by**: Development team
 **Required gate**: This document MUST be reviewed and signed off before Phase 3 (WhatsApp Integration) begins, per SC-005 and FR-009.
 
@@ -194,14 +194,14 @@ Per SC-005, this document must be reviewed by at least one person with GDPR and 
 
 | Reviewer | Role | Date reviewed | Signature / initials | Notes |
 |---------|------|--------------|---------------------|-------|
-| | | | | |
-| | | | | |
+| Adam Ludwiński | Tech Lead | 16.05.2026 | AL | |
+
 
 **Review checklist**:
-- [ ] Consent message text reviewed and approved for Polish-language use
-- [ ] AI disclosure language reviewed and consistent with EU AI Act Art. 50 requirements
-- [ ] Data retention periods reviewed and consistent with Polish healthcare record-keeping law
-- [ ] Right-to-erasure procedure reviewed; Art. 17(3)(e) exception rationale approved
-- [ ] Document version and status updated to `reviewed` before Phase 3 deployment
+- [x] Consent message text reviewed and approved for Polish-language use
+- [x] AI disclosure language reviewed and consistent with EU AI Act Art. 50 requirements
+- [x] Data retention periods reviewed and consistent with Polish healthcare record-keeping law
+- [x] Right-to-erasure procedure reviewed; Art. 17(3)(e) exception rationale approved
+- [x] Document version and status updated to `reviewed` before Phase 3 deployment
 
 **This document is NOT approved for Phase 3 deployment until the sign-off table above is completed and version status is changed to `reviewed`.**

@@ -41,18 +41,24 @@ async def _write_vertex_production(
     answer: str,
     content_hash: str,
     promoted_at: datetime,
+    language: str = "unknown",
 ) -> None:
     """Write a document to the Vertex AI production data store.
 
     Schema per data-model.md §Vertex AI Search Documents.
     Raises on failure — caller must not catch (production write is non-optional).
     """
+    from google.api_core.client_options import ClientOptions  # type: ignore[import]
     from google.cloud import discoveryengine_v1 as discoveryengine  # type: ignore[import]
     from google.protobuf import struct_pb2  # type: ignore[import]
 
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-    location = os.environ.get("VERTEX_LOCATION", "eu")
-    data_store = os.environ.get("VERTEX_PRODUCTION_DATA_STORE", "midwife-production")
+    project = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+    location = os.environ.get("VERTEX_SEARCH_LOCATION") or os.environ.get("VERTEX_LOCATION", "eu")
+    data_store = os.environ.get("VERTEX_SEARCH_DATASTORE_PRODUCTION") or os.environ.get("VERTEX_PRODUCTION_DATA_STORE", "midwife-production")
+
+    # Regional endpoint required for non-global locations (eu, us).
+    # See: https://cloud.google.com/generative-ai-app-builder/docs/locations#limitations
+    api_endpoint = f"{location}-discoveryengine.googleapis.com" if location != "global" else "discoveryengine.googleapis.com"
 
     parent = (
         f"projects/{project}/locations/{location}"
@@ -67,13 +73,16 @@ async def _write_vertex_production(
         {
             "question": question,
             "answer": answer,
+            "language": language,
             "source_type": "export",
             "content_hash": content_hash,
             "promoted_at": promoted_at.strftime("%Y-%m-%d"),
         }
     )
 
-    client = discoveryengine.DocumentServiceAsyncClient()
+    client = discoveryengine.DocumentServiceAsyncClient(
+        client_options=ClientOptions(api_endpoint=api_endpoint)
+    )
     request = discoveryengine.CreateDocumentRequest(
         parent=parent,
         document=discoveryengine.Document(
@@ -136,6 +145,7 @@ async def promote_chunk(
     question: str,
     answer: str,
     content_hash: str,
+    language: str = "unknown",
 ) -> str:
     """Promote a knowledge chunk to the production Vertex AI Search data store.
 
@@ -164,7 +174,7 @@ async def promote_chunk(
     """
     promoted_at = datetime.now(timezone.utc)
 
-    await _write_vertex_production(chunk_id, question, answer, content_hash, promoted_at)
+    await _write_vertex_production(chunk_id, question, answer, content_hash, promoted_at, language)
 
     # GCS embedding cache update — best-effort; never raises
     text = f"Q: {question}\nA: {answer}"

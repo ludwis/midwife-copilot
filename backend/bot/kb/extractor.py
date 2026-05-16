@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Override via GEMINI_MODEL env var if needed; default to Gemini 2.0 Flash.
 import os
 
-GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-001")
+GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # Estimated average characters per token (conservative; covers Polish text).
 _CHARS_PER_TOKEN: int = 4
@@ -51,7 +51,9 @@ Rules:
 midwife provides a substantive answer.
 - Do NOT include scheduling, administrative, or purely social exchanges.
 - Each pair must be standalone — no references to "you" (client-specific context).
-- Output as a JSON array of objects: {{"question": "...", "answer": "..."}}
+- Detect the primary language of each pair and include it as an ISO 639-1 code \
+(e.g. "pl" for Polish, "en" for English).
+- Output as a JSON array of objects: {{"question": "...", "answer": "...", "language": "..."}}
 - If no qualifying pairs exist, output: []
 
 Conversation:
@@ -67,6 +69,7 @@ class ChunkDraft(BaseModel):
 
     question: str
     answer: str
+    language: str = "unknown"  # ISO 639-1 code detected by Gemini (e.g. "pl", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +107,16 @@ def _build_windows(turns: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 
 
 def _call_gemini(prompt: str) -> str:
-    """Call Gemini via the vertexai SDK and return the raw text response."""
-    from vertexai.generative_models import GenerativeModel, GenerationConfig  # type: ignore[import]
+    """Call Gemini via the google-genai SDK and return the raw text response."""
+    from google import genai  # type: ignore[import]
+    from google.genai import types  # type: ignore[import]
 
-    model = GenerativeModel(GEMINI_MODEL)
-    response = model.generate_content(
-        prompt,
-        generation_config=GenerationConfig(
+    project = os.environ.get("GCP_PROJECT_ID", "")
+    client = genai.Client(vertexai=True, project=project, location="global")
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
             response_mime_type="application/json",
         ),
     )

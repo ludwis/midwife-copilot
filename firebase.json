@@ -22,6 +22,13 @@
     },
     "ui": {
       "enabled": true
-    }
+    },
+    "hosting": {
+      "port": 5000
+    },
+    "storage": {
+      "port": 9199
+    },
+    "singleProjectMode": true
   }
 }

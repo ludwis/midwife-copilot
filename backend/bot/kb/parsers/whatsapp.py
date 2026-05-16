@@ -2,13 +2,20 @@
 import re
 from typing import Any
 
+# Handles two common WhatsApp export formats:
+#   English/US:  12/31/2024, 20:07 - Sender: content
+#   Polish/EU:   [31.12.2024, 20:07:02] Sender: content  (no dash, brackets present)
 WHATSAPP_LINE_RE = re.compile(
-    r"^\[?(\d{1,2}[/\.]\d{1,2}[/\.]\d{2,4}),?\s(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)\]?\s[-–]\s(.+?):\s(.+)$"
+    r"^\[?(\d{1,2}[/\.]\d{1,2}[/\.]\d{2,4}),?\s(\d{1,2}:\d{2}(?::\d{2})?(?:\s?[APap][Mm])?)\]?\s(?:[-–]\s)?(.+?):\s(.+)$"
 )
 
 # Matches lines that start with a timestamp prefix (but may not be full messages).
 # Used to detect system-message lines that lack the "Sender: content" structure.
 _TIMESTAMP_PREFIX_RE = re.compile(r"^\[?\d{1,2}[/\.]\d{1,2}[/\.]\d{2,4}")
+
+# U+200E LEFT-TO-RIGHT MARK — WhatsApp prefixes system messages with this character
+# in many locales (visible as ‎ in text editors).
+_LTR_MARK = "\u200e"
 
 # Known system message prefixes — exact matches or prefixes.
 _SYSTEM_PREFIXES = (
@@ -17,6 +24,12 @@ _SYSTEM_PREFIXES = (
     "This message was deleted",
     "Missed voice call",
     "Missed video call",
+    # Polish locale system messages
+    "Wiadomości i połączenia są w pełni zaszyfrowane",
+    "Twoja wiadomość została usunięta",
+    "Ta wiadomość została usunięta",
+    "Nieodebrane połączenie głosowe",
+    "Nieodebrane połączenie wideo",
 )
 
 
@@ -36,8 +49,10 @@ def parse_whatsapp(text: str) -> list[dict[str, Any]]:
         m = WHATSAPP_LINE_RE.match(line)
         if m:
             date_str, time_str, sender, content = m.groups()
+            # Strip leading LTR mark (U+200E) that WhatsApp prepends to system messages.
+            content_stripped = content.lstrip(_LTR_MARK)
             # Filter messages whose content begins with a known system prefix.
-            if any(content.startswith(prefix) for prefix in _SYSTEM_PREFIXES):
+            if any(content_stripped.startswith(prefix) for prefix in _SYSTEM_PREFIXES):
                 if current is not None:
                     messages.append(current)
                     current = None
@@ -47,7 +62,7 @@ def parse_whatsapp(text: str) -> list[dict[str, Any]]:
             current = {
                 "timestamp": f"{date_str} {time_str}",
                 "sender": sender,
-                "content": content,
+                "content": content_stripped,
             }
         elif _TIMESTAMP_PREFIX_RE.match(line):
             # Line has a timestamp prefix but no "Sender: content" structure —

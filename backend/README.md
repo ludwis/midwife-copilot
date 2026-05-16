@@ -46,11 +46,13 @@ gcloud config set project $GCP_PROJECT_ID
 
 ## Environment Variables
 
-Copy `.env.example` from the repo root and fill in the Phase 1 variables:
+Copy `.env.example` from the repo root into the `backend/` directory:
 
 ```bash
-cp ../.env.example ../.env
+cp ../.env.example .env
 ```
+
+The backend loads `backend/.env` automatically at startup via `python-dotenv` — no manual `export` needed.
 
 Key variables:
 

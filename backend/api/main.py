@@ -18,6 +18,9 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 import spacy
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import HTTPException
@@ -39,6 +42,12 @@ _FRONTEND_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 async def lifespan(app: FastAPI):  # noqa: ARG001
     """Load heavy singletons on startup; release on shutdown (if needed)."""
     global nlp
+
+    import vertexai  # type: ignore[import]
+    project = os.environ.get("GCP_PROJECT_ID", "")
+    vertexai.init(project=project, location="global")
+    logger.info("Vertex AI initialised (project=%s, location=global)", project)
+
     model_name = os.environ.get("SPACY_MODEL", "xx_ent_wiki_sm")
     logger.info("Loading spaCy model '%s'…", model_name)
     nlp = spacy.load(model_name)

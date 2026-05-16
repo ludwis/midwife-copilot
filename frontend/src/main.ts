@@ -1,3 +1,4 @@
+import './main.css'
 import { initializeApp } from 'firebase/app'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'

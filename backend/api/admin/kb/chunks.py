@@ -84,6 +84,7 @@ def _doc_to_summary(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "chunk_id": doc_id,
         "question": data.get("question", ""),
         "answer": data.get("answer", ""),
+        "language": data.get("language", "unknown"),
         "status": data.get("status", ""),
         "source_type": data.get("source_type", "export"),
         "import_id": data.get("import_id"),
@@ -143,11 +144,11 @@ async def list_chunks(
         "staged_at", direction=firestore.Query.DESCENDING
     )
     if status is not None:
-        query = query.where("status", "==", status)
+        query = query.where(filter=firestore.FieldFilter("status", "==", status))
     if import_id is not None:
-        query = query.where("import_id", "==", import_id)
+        query = query.where(filter=firestore.FieldFilter("import_id", "==", import_id))
     if duplicate_flag is not None:
-        query = query.where("duplicate_flag", "==", duplicate_flag)
+        query = query.where(filter=firestore.FieldFilter("duplicate_flag", "==", duplicate_flag))
 
     # Apply cursor pagination: decode cursor → fetch snapshot → start_after
     if cursor is not None:
@@ -179,7 +180,7 @@ async def list_chunks(
     # Count total staged chunks for the review-queue badge
     total_staged_count = (
         db.collection("kb_chunks")
-        .where("status", "==", "staged")
+        .where(filter=firestore.FieldFilter("status", "==", "staged"))
         .count()
         .get()[0][0]
         .value
@@ -271,8 +272,9 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
         question = data["question"]
         answer = data["answer"]
         content_hash = data["content_hash"]
+        language = data.get("language", "unknown")
 
-        vertex_id = await _promotion.promote_chunk(chunk_id, question, answer, content_hash)
+        vertex_id = await _promotion.promote_chunk(chunk_id, question, answer, content_hash, language)
 
         updates.update(
             {
@@ -310,7 +312,8 @@ async def review_chunk(chunk_id: str, body: ReviewActionBody) -> dict[str, Any]:
         original_hash = data["content_hash"]
         new_hash = hashlib.sha256((new_question + "\n" + new_answer).encode()).hexdigest()
 
-        vertex_id = await _promotion.promote_chunk(chunk_id, new_question, new_answer, new_hash)
+        language = data.get("language", "unknown")
+        vertex_id = await _promotion.promote_chunk(chunk_id, new_question, new_answer, new_hash, language)
 
         updates.update(
             {

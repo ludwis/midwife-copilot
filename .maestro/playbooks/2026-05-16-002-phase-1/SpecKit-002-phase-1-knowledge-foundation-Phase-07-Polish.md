@@ -25,6 +25,7 @@ Add error handling, UX polish, and operational readiness across all layers, then
 ## Completion
 
 - [ ] All 7 success criteria SC-001–SC-007 are green
+  <!-- STATUS 2026-05-16: SC-001 ✅, SC-002 ✅, SC-003 ✅ (all code-verifiable SCs green). SC-004 ❌ BLOCKED — pipeline complete but only 8 chunks from golden dataset; ≥12 more needed from real midwife exports. SC-005 ❌ PENDING — docs/compliance-framework.md complete but sign-off table empty; requires human GDPR reviewer. SC-006 ❌ PENDING — docs/whatsapp-registration-status.md all 5 steps "Not started"; midwife must initiate Meta Business Suite account. SC-007 ⚠ PARTIAL — mocked Vertex AI confirmed; live validation blocked by SC-004. Remaining blockers are operational (content input, human sign-off, business registration) — not engineering tasks. Full report: Working/T059-sc-validation-report.md -->
 - [ ] 413 error is returned when uploading a file >10 MB
 - [ ] 409 error is returned on concurrent review attempt
 - [ ] Approve/Discard buttons show loading state and cannot be double-clicked during in-flight requests

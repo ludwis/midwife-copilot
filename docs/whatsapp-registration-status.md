@@ -30,8 +30,8 @@ related:
 - Business website or Facebook Page
 - Business phone number and address
 
-**Date submitted**: _(pending)_
-**Status**: ⬜ Not started
+**Date submitted**: 16.05.2026
+**Status**: ✅ Complete
 
 **Notes**:
 
@@ -48,8 +48,8 @@ related:
 
 **Where to submit**: Meta Business Manager → Business Info → Business Verification
 
-**Date submitted**: _(pending)_
-**Status**: ⬜ Not started
+**Date submitted**: 16.05.2026
+**Status**: ✅ Complete
 
 **Notes**:
 
@@ -67,8 +67,8 @@ related:
 
 **Where**: https://developers.facebook.com → My Apps → Create App
 
-**Date submitted**: _(pending)_
-**Status**: ⬜ Not started
+**Date submitted**: 16.05.2026
+**Status**: 🔄 In Progress
 
 **Notes**:
 
