@@ -17,7 +17,7 @@ Implement the review-and-promotion pipeline: backend chunk promotion writer, GET
 ### Tests (write before implementation)
 
 - [x] T037 [US2] Write integration test for review actions in `backend/tests/integration/test_review_actions.py` (Firestore emulator; seed 3 `kb_chunks` docs with `status=staged`; test `approve`: PATCH → assert doc `status=promoted`, `production_vertex_id` set, `reviewed_at` set; test `edit_approve`: assert `content_hash` updated, `content_hash_before_edit` preserved, `status=promoted`; test `discard`: assert `status=discarded`; test 409 on second PATCH to already-actioned chunk via simulated concurrent request)
-- [ ] T038 [P] [US2] Write acceptance test for golden dataset end-to-end pipeline in `backend/tests/integration/test_kb_pipeline.py` (`test_golden_dataset`: load `golden_whatsapp_export.txt`, run full pipeline with VCR Gemini cassette, assert extracted and PII-stripped chunks match `golden_expected_chunks.json` structure and content; assert no digit sequence >6 digits in any chunk question or answer)
+- [x] T038 [P] [US2] Write acceptance test for golden dataset end-to-end pipeline in `backend/tests/integration/test_kb_pipeline.py` (`test_golden_dataset`: load `golden_whatsapp_export.txt`, run full pipeline with VCR Gemini cassette, assert extracted and PII-stripped chunks match `golden_expected_chunks.json` structure and content; assert no digit sequence >6 digits in any chunk question or answer)
 
 ### Implementation
 
