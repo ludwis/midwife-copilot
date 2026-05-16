@@ -35,7 +35,8 @@ Verify and complete the audit trail coverage across all knowledge management eve
 
 ## Completion
 
-- [ ] `pytest backend/tests/integration/test_audit_log.py` passes — all 8 event types asserted
+- [x] `pytest backend/tests/integration/test_audit_log.py` passes — all 8 event types asserted
+  <!-- Verified 2026-05-16: 1 passed in 5.34s — test_all_8_event_types_emitted_in_full_sequence green. -->
 - [ ] Run full extraction → approve 2 chunks → discard 1 → promote 1 to production; query GCS audit.jsonl and confirm all expected events appear with required fields
 - [ ] `cloudbuild.yaml` contains the retention lock commented step with `# IRREVERSIBLE` warning
 - [ ] `INTEGRATION=true pytest backend/tests/integration/test_vertex_search.py` passes (requires real GCP dev project)
