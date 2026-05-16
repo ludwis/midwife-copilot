@@ -1,35 +1,28 @@
-"""POST /api/admin/kb/imports  — Upload chat export and trigger extraction.
+"""POST /api/admin/kb/imports  — Upload chat export to GCS and create Firestore doc.
 GET  /api/admin/kb/imports  — List past import runs (newest first).
 
-Pipeline (background task):
-  parse → PII strip each turn → Gemini extract Q&A → dedup + stage
-  → update kb_imports (status, chunks_extracted, chunks_flagged_duplicate, completed_at)
-  → emit kb_import_completed audit event
+Pipeline (event-driven via Firebase Function):
+  Firestore document.create on kb_imports triggers Phase 2 Firebase Function,
+  which downloads from GCS, runs extraction, and updates the document.
 
 Env vars:
   GOOGLE_CLOUD_PROJECT  — GCP project ID
+  KB_IMPORTS_BUCKET_NAME — GCS bucket for uploaded chat exports
   ADMIN_TOKEN           — checked by require_admin_token dependency (api/auth.py)
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from google.cloud import firestore
+from google.cloud import firestore, storage
 
 import core.audit
-from bot.kb.extractor import extract_qa_pairs
-from bot.kb.parsers.messenger import parse_messenger
-from bot.kb.parsers.whatsapp import parse_whatsapp
-from bot.kb.pii_stripper import strip_pii
-from bot.kb.staging import stage_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +32,11 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 _VALID_FORMATS = {"whatsapp_txt", "messenger_json"}
 _VALID_STATUSES = {"processing", "completed", "failed", "no_pairs_found"}
 
-# Lazy Firestore singleton (same pattern as staging.py)
+KB_IMPORTS_BUCKET_NAME = os.environ.get("KB_IMPORTS_BUCKET_NAME", "")
+
+# Lazy singletons
 _firestore_client: firestore.Client | None = None
+_gcs_client: storage.Client | None = None
 
 
 def _get_firestore() -> firestore.Client:
@@ -48,6 +44,13 @@ def _get_firestore() -> firestore.Client:
     if _firestore_client is None:
         _firestore_client = firestore.Client()
     return _firestore_client
+
+
+def _get_gcs() -> storage.Client:
+    global _gcs_client
+    if _gcs_client is None:
+        _gcs_client = storage.Client()
+    return _gcs_client
 
 
 # ---------------------------------------------------------------------------
@@ -88,118 +91,33 @@ def _doc_to_detail(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return detail
 
 
-# ---------------------------------------------------------------------------
-# Background pipeline
-# ---------------------------------------------------------------------------
+def _extension_for_format(source_format: str) -> str:
+    """Return the file extension for a given source format."""
+    if source_format == "whatsapp_txt":
+        return ".txt"
+    return ".json"  # messenger_json
 
 
-async def _run_pipeline(
+def _upload_import_file(
+    content: bytes,
     import_id: str,
+    filename_hash: str,
     source_format: str,
-    file_content: bytes,
-    original_filename: str,
-) -> None:
-    """Full extraction pipeline; called via BackgroundTasks."""
-    db = _get_firestore()
-    import_ref = db.collection("kb_imports").document(import_id)
-    started_at = datetime.now(timezone.utc)
+) -> str:
+    """Upload file bytes to GCS and return the gs:// URI.
 
-    try:
-        # 1. Parse raw chat export
-        if source_format == "whatsapp_txt":
-            text = file_content.decode("utf-8", errors="replace")
-            turns = parse_whatsapp(text)
-        else:  # messenger_json
-            # parse_messenger reads from file paths, so write to a temp file
-            suffix = ".json"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(file_content)
-                tmp_path = tmp.name
-            try:
-                turns = parse_messenger([tmp_path])
-            finally:
-                os.unlink(tmp_path)
-
-        # 2. PII-strip each turn's content before passing to Gemini
-        stripped_turns = []
-        for turn in turns:
-            stripped_content, _flag = strip_pii(turn["content"])
-            stripped_turns.append({**turn, "content": stripped_content})
-
-        # 3. Gemini Q&A extraction — run synchronous Gemini calls in a thread
-        #    pool so the asyncio event loop remains free to serve other requests.
-        chunks = await asyncio.to_thread(extract_qa_pairs, stripped_turns)
-
-        if not chunks:
-            now = datetime.now(timezone.utc)
-            import_ref.update(
-                {
-                    "status": "no_pairs_found",
-                    "completed_at": now,
-                    "chunks_extracted": 0,
-                    "chunks_flagged_duplicate": 0,
-                }
-            )
-            core.audit.write_event(
-                "kb_import_completed",
-                actor="midwife",
-                import_id=import_id,
-                status="no_pairs_found",
-                chunks_extracted=0,
-                chunks_flagged_duplicate=0,
-                duration_ms=int((now - started_at).total_seconds() * 1000),
-            )
-            return
-
-        # 4. Dedup + stage into Firestore + Vertex AI (best-effort)
-        chunk_ids = await stage_chunks(chunks, import_id, client=None)
-
-        # Count how many staged chunks were flagged as duplicates
-        chunks_flagged = 0
-        for chunk_id in chunk_ids:
-            doc = db.collection("kb_chunks").document(chunk_id).get()
-            if doc.exists and doc.to_dict().get("duplicate_flag"):
-                chunks_flagged += 1
-
-        completed_at = datetime.now(timezone.utc)
-
-        # 5. Update kb_imports with final status
-        import_ref.update(
-            {
-                "status": "completed",
-                "completed_at": completed_at,
-                "chunks_extracted": len(chunk_ids),
-                "chunks_flagged_duplicate": chunks_flagged,
-            }
+    Raises RuntimeError if KB_IMPORTS_BUCKET_NAME is not set.
+    """
+    if not KB_IMPORTS_BUCKET_NAME:
+        raise RuntimeError(
+            "KB_IMPORTS_BUCKET_NAME environment variable is not set"
         )
-
-        core.audit.write_event(
-            "kb_import_completed",
-            actor="midwife",
-            import_id=import_id,
-            status="completed",
-            chunks_extracted=len(chunk_ids),
-            chunks_flagged_duplicate=chunks_flagged,
-            duration_ms=int((completed_at - started_at).total_seconds() * 1000),
-        )
-
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Import pipeline failed for import_id=%s", import_id)
-        failed_at = datetime.now(timezone.utc)
-        import_ref.update(
-            {
-                "status": "failed",
-                "completed_at": failed_at,
-                "error_message": str(exc),
-            }
-        )
-        core.audit.write_event(
-            "kb_import_completed",
-            actor="midwife",
-            import_id=import_id,
-            status="failed",
-            duration_ms=int((failed_at - started_at).total_seconds() * 1000),
-        )
+    ext = _extension_for_format(source_format)
+    blob_name = f"imports/{import_id}/{filename_hash}{ext}"
+    bucket = _get_gcs().bucket(KB_IMPORTS_BUCKET_NAME)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(content)
+    return f"gs://{KB_IMPORTS_BUCKET_NAME}/{blob_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -209,11 +127,10 @@ async def _run_pipeline(
 
 @router.post("/imports", status_code=202)
 async def create_import(
-    background_tasks: BackgroundTasks,
     file: UploadFile,
     source_format: str = Form(...),
 ) -> JSONResponse:
-    """Upload a chat export file and enqueue the extraction pipeline."""
+    """Upload a chat export file to GCS and create a Firestore import doc."""
     if source_format not in _VALID_FORMATS:
         raise HTTPException(
             status_code=400,
@@ -232,11 +149,19 @@ async def create_import(
     original_filename = file.filename or ""
     filename_hash = hashlib.sha256(original_filename.encode()).hexdigest()
 
+    # Allocate the Firestore doc ref first so we know the import_id for the GCS path.
     db = _get_firestore()
-    now = datetime.now(timezone.utc)
     doc_ref = db.collection("kb_imports").document()
     import_id = doc_ref.id
 
+    # Upload to GCS before any Firestore write; fail fast on storage errors.
+    try:
+        gcs_path = _upload_import_file(content, import_id, filename_hash, source_format)
+    except Exception as exc:
+        logger.exception("GCS upload failed for import_id=%s", import_id)
+        raise HTTPException(status_code=500, detail=f"File upload failed: {exc}") from exc
+
+    now = datetime.now(timezone.utc)
     doc_ref.set(
         {
             "filename_hash": filename_hash,
@@ -244,6 +169,7 @@ async def create_import(
             "submitted_at": now,
             "submitted_by": "midwife",
             "status": "processing",
+            "gcs_path": gcs_path,
         }
     )
 
@@ -253,14 +179,6 @@ async def create_import(
         import_id=import_id,
         source_format=source_format,
         filename_hash=filename_hash,
-    )
-
-    background_tasks.add_task(
-        _run_pipeline,
-        import_id=import_id,
-        source_format=source_format,
-        file_content=content,
-        original_filename=original_filename,
     )
 
     submitted_at_str = (
