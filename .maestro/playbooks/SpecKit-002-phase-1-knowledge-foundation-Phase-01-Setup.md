@@ -18,8 +18,8 @@ Scaffold the complete project directory structure, dependency manifests, configu
 - [x] T004 [P] Create `frontend/package.json` with deps: vue@3, typescript, vite, @vitejs/plugin-vue, tailwindcss, autoprefixer, pinia, vue-router, vite-plugin-pwa, firebase@10
 - [x] T005 [P] Create `frontend/vite.config.ts` (Vue plugin + PWA plugin; server proxy `/api` → `http://localhost:8000`; build output to `dist/`)
 - [x] T006 [P] Create `frontend/tailwind.config.ts` (content paths covering `src/**/*.{vue,ts}`)
-- [ ] T007 [P] Create `frontend/tsconfig.json` (target ES2022, module ESNext, strict true, paths alias `@/` → `src/`)
-- [ ] T008 [P] Create `firebase.json` (hosting: public `frontend/dist`, rewrites all → index.html; emulators: auth on 9099, firestore on 8080)
+- [x] T007 [P] Create `frontend/tsconfig.json` (target ES2022, module ESNext, strict true, paths alias `@/` → `src/`)
+- [x] T008 [P] Create `firebase.json` (hosting: public `frontend/dist`, rewrites all → index.html; emulators: auth on 9099, firestore on 8080)
 - [ ] T009 [P] Create `frontend/.firebaserc` (default project binding from `GCP_PROJECT_ID`)
 - [ ] T010 [P] Create `cloudbuild.yaml` (steps: `docker build` backend image, push to Artifact Registry, `gcloud run deploy` to `europe-west1`, min-instances=1)
 - [ ] T011 [P] Create `frontend/public/manifest.json` (PWA manifest: name "Stilla Admin", short_name "Stilla", display standalone, start_url "/kb", theme_color, icons array)
