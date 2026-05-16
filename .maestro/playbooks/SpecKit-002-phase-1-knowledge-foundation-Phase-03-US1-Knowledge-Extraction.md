@@ -1,0 +1,47 @@
+# Phase 03: User Story 1 — Knowledge Extraction from Chat Exports
+
+Implement the full extraction pipeline: WhatsApp and Messenger parsers, PII stripping via spaCy NER + regex, Gemini 2.0 Flash Q&A extraction, near-duplicate detection, staging writer, import REST endpoints, and the frontend upload+polling UI. By the end of this phase a chat export can be uploaded and staged chunks are visible via GET /api/admin/kb/chunks?status=staged.
+
+**Priority**: P1 — MVP critical. The entire downstream pipeline depends on this.
+
+## Spec Kit Context
+
+- **Feature:** 002-phase-1-knowledge-foundation
+- **Specification:** specs/002-phase-1-knowledge-foundation/spec.md
+- **Plan:** specs/002-phase-1-knowledge-foundation/plan.md
+- **Research:** specs/002-phase-1-knowledge-foundation/research.md (§1 WhatsApp regex, §3 PII patterns, §4 extraction prompt)
+- **Data Model:** specs/002-phase-1-knowledge-foundation/data-model.md
+- **Contracts:** specs/002-phase-1-knowledge-foundation/contracts/kb-ingestion.yaml
+
+## Tasks
+
+### Tests (write before implementation — TDD)
+
+- [x] T021 [US1] Write unit tests for WhatsApp parser in `backend/tests/unit/test_whatsapp_parser.py` (parametrize over DD/MM/YYYY and DD.MM.YY timestamp variants; assert multi-line message continuation is appended to previous; assert known system message strings like "Messages and calls are end-to-end encrypted" are filtered; assert empty file returns empty list)
+  <!-- 21 tests collected (5 regex tests pass; 16 parse_whatsapp tests red, awaiting T026). Created: tests/unit/__init__.py, bot/__init__.py, bot/kb/__init__.py, bot/kb/parsers/__init__.py, bot/kb/parsers/whatsapp.py (stub), tests/unit/test_whatsapp_parser.py. Note: research.md regex requires dash separator; tests use Android no-bracket format + bracket+dash format accordingly. -->
+- [ ] T022 [P] [US1] Write unit tests for Messenger parser in `backend/tests/unit/test_messenger_parser.py` (multi-file merge deduplicates on (sender_name, timestamp_ms, content); missing `content` field is skipped; output sorted ascending by timestamp_ms; sticker/photo entries with no content are excluded)
+- [ ] T023 [P] [US1] Write unit tests for PII stripper in `backend/tests/unit/test_pii_stripper.py` (PERSON entity → `[IMIĘ]`; LOC entity → `[ADRES]`; phone `+48 601 234 567` → `[TELEFON]`; email `anna@gmail.com` → `[EMAIL]`; PESEL 11-digit → `[PESEL]`; post-strip re-scan flags a chunk containing a remaining 7-digit sequence)
+- [ ] T024 [P] [US1] Write unit tests for deduplicator in `backend/tests/unit/test_deduplicator.py` (same SHA-256 hash as existing chunk → `exact` flag + correct `duplicate_of_chunk_id`; mocked embedding cosine similarity 0.95 → `near` flag; mocked cosine similarity 0.85 → no flag; empty cache → no flags for any input)
+- [ ] T025 [US1] Write integration test for import flow in `backend/tests/integration/test_import_flow.py` (Firestore emulator `FIRESTORE_EMULATOR_HOST=localhost:8080`; VCR cassette for Gemini response; POST multipart to `/api/admin/kb/imports`; poll GET until `status=completed`; assert `kb_imports` doc created with correct fields; assert `kb_chunks` docs in Firestore with `status=staged` and no PII in question/answer; assert a `kb_chunk_staged` audit event was emitted for each created chunk — verify via mock GCS write capture that `event_type`, `chunk_id`, `import_id`, and `content_hash` fields are present)
+
+### Implementation (in dependency order)
+
+- [ ] T026 [P] [US1] Implement WhatsApp .txt parser in `backend/bot/kb/parsers/whatsapp.py` (`WHATSAPP_LINE_RE` regex per research.md §1; iterate lines: if line matches, save previous message and start new; if no match, append to current message content; filter lines matching known system-message prefixes; return `list[dict]` with keys `timestamp`, `sender`, `content`)
+- [ ] T027 [P] [US1] Implement Messenger .json parser in `backend/bot/kb/parsers/messenger.py` (accept list of file paths for multi-file exports; parse each `message_N.json`; skip entries without `content`; deduplicate on `(sender_name, timestamp_ms, content)` using a set; sort ascending by `timestamp_ms`; convert `timestamp_ms` to ISO-8601 UTC; return `list[dict]` with keys `timestamp`, `sender`, `content`)
+- [ ] T028 [US1] Implement PII stripper in `backend/bot/kb/pii_stripper.py` (load `xx_ent_wiki_sm` once at module level; `strip_pii(text: str) -> tuple[str, bool]`: pass 1 — spaCy NER, replace `PERSON` → `[IMIĘ]`, `LOC` → `[ADRES]`, `ORG` → `[FIRMA]` using span offsets; pass 2 — four regex patterns per research.md §3 for phone/email/PESEL/NIP; post-strip rescan: flag if any digit sequence >6 digits remains; return stripped text + flag bool)
+- [ ] T029 [US1] Implement Gemini 2.0 Flash Q&A extractor in `backend/bot/kb/extractor.py` (extraction prompt per research.md §4; batch conversation turns into windows of 50 with 10-turn overlap when token estimate >8k; call `vertexai.generative_models.GenerativeModel(GEMINI_MODEL).generate_content()` with `response_mime_type="application/json"`; parse JSON with Pydantic `list[ChunkDraft]`; retry max 2× on `ValidationError` or `JSONDecodeError`; return `list[ChunkDraft]` — empty list is valid and signals `no_pairs_found`)
+- [ ] T030 [US1] Implement near-duplicate detector in `backend/bot/kb/deduplicator.py` (load GCS embedding cache `gs://midwife-bot-audit-{env}/embeddings/cache.jsonl` at startup into `dict[chunk_id, embedding]`; `check_duplicate(question: str, chunk_id: str, existing_hashes: set[str]) -> DedupResult`: pass 1 — SHA-256 of normalized question (lower, collapsed whitespace); if hash in `existing_hashes` return `DedupResult(flag="exact", ...)`; pass 2 — compute Vertex AI `textembedding-gecko-multilingual@001` embedding in `eu` region; cosine similarity vs all cached embeddings; if max similarity >0.90 return `DedupResult(flag="near", similarity=..., duplicate_of_chunk_id=...)`; else return `DedupResult(flag=None)`)
+- [ ] T031 [US1] Implement staging writer in `backend/bot/kb/staging.py` (`stage_chunks(chunks: list[ChunkDraft], import_id: str, client: AsyncClient) -> list[str]`: for each chunk: compute `content_hash = SHA-256(question + "\n" + answer)`; call `deduplicator.check_duplicate()`; create `kb_chunks` Firestore doc with fields per data-model.md (`status=staged`, `staged_at`, `source_type=export`, `import_id`, `duplicate_flag`, `duplicate_of_chunk_id`, `similarity_score`); write document to Vertex AI staging data store using Discovery Engine API with schema per data-model.md §Vertex AI Search Documents; call `audit.write_event("kb_chunk_staged", actor="midwife", import_id=import_id, chunk_id=chunk_id, content_hash=content_hash, duplicate_flag=duplicate_flag)` immediately after Firestore doc creation; return list of `chunk_id` strings)
+- [ ] T032 [US1] Implement `POST /api/admin/kb/imports` and `GET /api/admin/kb/imports` in `backend/api/admin/kb/imports.py` (POST: validate `file` ≤10 MB and `source_format` enum; compute `filename_hash = SHA-256(original_filename)`; create `kb_imports` doc in Firestore with `status=processing`; emit `kb_import_started` audit event; enqueue `BackgroundTasks` task running: detect format → parse → PII strip → Gemini extract → dedup + stage → update `kb_imports` with `status`, `chunks_extracted`, `chunks_flagged_duplicate`, `completed_at` → emit `kb_import_completed`; return 202 `ImportCreatedResponse`; GET: list `kb_imports` newest-first with optional `status` filter and `limit` param per kb-ingestion.yaml)
+- [ ] T033 [US1] Implement `GET /api/admin/kb/imports/{import_id}` in `backend/api/admin/kb/imports.py` (fetch `kb_imports` Firestore doc by `import_id`; return `ImportDetail` schema with `error_message` field populated on `failed` status; raise 404 if document not found)
+- [ ] T034 [US1] Implement `frontend/src/pages/LoginPage.vue` (Tailwind-styled centered card; "Sign in with Google" button; on click calls `authStore.signInWithGoogle()`; on success `router.push('/kb')`; on failure display error message; show spinner during sign-in; if already authenticated redirect immediately to `/kb`)
+- [ ] T035 [US1] Create `frontend/src/services/api.ts` (typed API client: read token from `import.meta.env.VITE_ADMIN_TOKEN`; attach `X-Admin-Token` header on all requests; `createImport(file: File, sourceFormat: 'whatsapp_txt' | 'messenger_json'): Promise<ImportCreatedResponse>`; `listImports(status?: string): Promise<{imports: ImportSummary[]}>`; `getImport(id: string): Promise<ImportDetail>`; all interfaces typed per kb-ingestion.yaml schemas)
+- [ ] T036 [US1] Add import upload section to `frontend/src/pages/KbReviewPage.vue` (file input accepting `.txt` and `.json`; `source_format` radio buttons; "Upload & Extract" button calling `api.createImport()`; on 202 response start polling `api.getImport(importId)` every 3 s; display current status badge (processing/completed/failed/no_pairs_found); on completed show summary: chunks extracted, duplicates flagged; stop polling on terminal status)
+
+## Completion
+
+- [ ] Unit tests pass: `pytest backend/tests/unit/` (T021–T024)
+- [ ] Integration test passes with Firestore emulator running on :8080: `pytest backend/tests/integration/test_import_flow.py`
+- [ ] POST `golden_whatsapp_export.txt` to `/api/admin/kb/imports`, poll until `status=completed`, GET `/api/admin/kb/chunks?status=staged` — confirm chunks present with PII replaced by Polish placeholders
+- [ ] Verify no personal identifiers (names, phone numbers, emails) visible in any staged chunk
+- [ ] Run `/speckit-analyze` to verify consistency
