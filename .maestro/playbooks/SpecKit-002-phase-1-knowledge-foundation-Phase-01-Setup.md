@@ -28,8 +28,8 @@ Scaffold the complete project directory structure, dependency manifests, configu
 
 ## Completion
 
-- [ ] Verify all directories exist: `backend/`, `backend/api/admin/kb/`, `backend/bot/kb/parsers/`, `backend/core/`, `backend/tests/unit/`, `backend/tests/integration/`, `backend/tests/fixtures/`, `frontend/src/pages/`, `frontend/src/stores/`, `frontend/src/router/`, `frontend/src/services/`, `frontend/public/`, `docs/`
-- [ ] Verify `backend/requirements.txt`, `.env.example`, all frontend config files, `firebase.json`, `cloudbuild.yaml`, and both fixture files exist
-- [ ] Verify `golden_whatsapp_export.txt` contains ≥30 messages with PII and mixed turn types
-- [ ] Verify `golden_expected_chunks.json` is valid JSON and all PII is replaced with Polish placeholders
-- [ ] Run `/speckit-analyze` to verify consistency
+- [x] Verify all directories exist: `backend/`, `backend/api/admin/kb/`, `backend/bot/kb/parsers/`, `backend/core/`, `backend/tests/unit/`, `backend/tests/integration/`, `backend/tests/fixtures/`, `frontend/src/pages/`, `frontend/src/stores/`, `frontend/src/router/`, `frontend/src/services/`, `frontend/public/`, `docs/`
+- [x] Verify `backend/requirements.txt`, `.env.example`, all frontend config files, `firebase.json`, `cloudbuild.yaml`, and both fixture files exist
+- [x] Verify `golden_whatsapp_export.txt` contains ≥30 messages with PII and mixed turn types
+- [x] Verify `golden_expected_chunks.json` is valid JSON and all PII is replaced with Polish placeholders
+- [x] Run `/speckit-analyze` to verify consistency
