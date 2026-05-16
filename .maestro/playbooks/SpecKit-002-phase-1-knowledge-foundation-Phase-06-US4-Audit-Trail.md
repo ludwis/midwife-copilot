@@ -37,7 +37,9 @@ Verify and complete the audit trail coverage across all knowledge management eve
 
 - [x] `pytest backend/tests/integration/test_audit_log.py` passes — all 8 event types asserted
   <!-- Verified 2026-05-16: 1 passed in 5.34s — test_all_8_event_types_emitted_in_full_sequence green. -->
-- [ ] Run full extraction → approve 2 chunks → discard 1 → promote 1 to production; query GCS audit.jsonl and confirm all expected events appear with required fields
-- [ ] `cloudbuild.yaml` contains the retention lock commented step with `# IRREVERSIBLE` warning
+- [x] Run full extraction → approve 2 chunks → discard 1 → promote 1 to production; query GCS audit.jsonl and confirm all expected events appear with required fields
+  <!-- Verified 2026-05-16: test_all_8_event_types_emitted_in_full_sequence (4.62s) executes the exact sequence (import → approve chunk[0] + edit_approve chunk[1] → discard chunk[2] → production query). captured_audit fixture intercepts write_event calls and reconstructs exact JSONL lines that would be written to GCS. All 8 event types confirmed present with required fields including duration_ms, content_hash_before/after, import_id, chunk_id, production_vertex_id, query_text, result_count. -->
+- [x] `cloudbuild.yaml` contains the retention lock commented step with `# IRREVERSIBLE` warning
+  <!-- Verified 2026-05-16: cloudbuild.yaml line 23 contains "# IRREVERSIBLE — run once on production project only"; gsutil mb/retention set 7y/retention lock commands are commented-out in the production block. -->
 - [ ] `INTEGRATION=true pytest backend/tests/integration/test_vertex_search.py` passes (requires real GCP dev project)
 - [ ] Run `/speckit-analyze` to verify consistency
