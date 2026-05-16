@@ -1,10 +1,10 @@
 <template>
   <div class="min-h-screen bg-gray-50 p-8">
-    <div class="max-w-xl mx-auto">
+    <div class="max-w-4xl mx-auto">
       <h1 class="text-2xl font-semibold text-gray-800 mb-6">Knowledge Base</h1>
 
       <!-- Upload card -->
-      <div class="bg-white rounded-2xl shadow-md p-8">
+      <div class="bg-white rounded-2xl shadow-md p-8 max-w-xl">
         <h2 class="text-lg font-medium text-gray-700 mb-4">Upload Chat Export</h2>
 
         <!-- File input -->
@@ -92,14 +92,204 @@
           </p>
         </div>
       </div>
+
+      <!-- Review Queue -->
+      <div class="mt-10">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-medium text-gray-700">
+            Review Queue
+            <span class="ml-2 px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
+              {{ kbStore.stagedChunks.length }}
+            </span>
+          </h2>
+          <button
+            @click="kbStore.fetchStagedChunks()"
+            :disabled="loadingChunks"
+            class="text-sm text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
+
+        <div v-if="loadingChunks" class="text-sm text-gray-500 py-4">Loading…</div>
+
+        <p v-else-if="kbStore.stagedChunks.length === 0" class="text-sm text-gray-500 py-4">
+          No staged chunks pending review.
+        </p>
+
+        <div v-else class="space-y-4">
+          <div
+            v-for="chunk in kbStore.stagedChunks"
+            :key="chunk.chunk_id"
+            class="bg-white rounded-2xl shadow-md p-6"
+          >
+            <!-- Header row: badges + timestamp -->
+            <div class="flex items-center gap-2 mb-3 flex-wrap">
+              <!-- Source badge -->
+              <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                {{ chunk.source_type === 'export' ? 'Export' : 'Conversation' }}
+              </span>
+
+              <!-- Duplicate warning badge -->
+              <span
+                v-if="chunk.duplicate_flag"
+                class="px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 flex items-center gap-1"
+              >
+                ⚠ {{ chunk.duplicate_flag === 'exact' ? 'Exact duplicate' : 'Near duplicate' }}
+                <span v-if="chunk.similarity_score != null">({{ (chunk.similarity_score * 100).toFixed(0) }}%)</span>
+                <span v-if="chunk.duplicate_of"> — similar to {{ chunk.duplicate_of.chunk_id.slice(0, 8) }}</span>
+              </span>
+
+              <span class="ml-auto text-xs text-gray-400">
+                {{ formatDate(chunk.staged_at) }}
+              </span>
+            </div>
+
+            <!-- Edit mode -->
+            <template v-if="editingId === chunk.chunk_id">
+              <div class="space-y-3 mb-4">
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Question</label>
+                  <textarea
+                    v-model="editQuestion"
+                    rows="2"
+                    class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Answer</label>
+                  <textarea
+                    v-model="editAnswer"
+                    rows="4"
+                    class="w-full text-sm border border-gray-300 rounded-lg p-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  />
+                </div>
+              </div>
+              <div class="flex gap-2 flex-wrap">
+                <button
+                  @click="submitEditApprove(chunk.chunk_id)"
+                  :disabled="!!actionLoading[chunk.chunk_id]"
+                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 transition-colors"
+                >
+                  {{ actionLoading[chunk.chunk_id] ? 'Saving…' : 'Save & Approve' }}
+                </button>
+                <button
+                  @click="cancelEdit"
+                  :disabled="!!actionLoading[chunk.chunk_id]"
+                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </template>
+
+            <!-- Read mode -->
+            <template v-else>
+              <div class="mb-3">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Question</p>
+                <p class="text-sm text-gray-800">{{ chunk.question }}</p>
+              </div>
+              <div class="mb-4">
+                <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Answer</p>
+                <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ chunk.answer }}</p>
+              </div>
+
+              <!-- Action buttons -->
+              <div class="flex gap-2 flex-wrap">
+                <button
+                  @click="handleApprove(chunk.chunk_id)"
+                  :disabled="!!actionLoading[chunk.chunk_id]"
+                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {{ actionLoading[chunk.chunk_id] === 'approve' ? 'Approving…' : 'Approve' }}
+                </button>
+                <button
+                  @click="startEdit(chunk)"
+                  :disabled="!!actionLoading[chunk.chunk_id]"
+                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                >
+                  Edit &amp; Approve
+                </button>
+                <button
+                  @click="handleDiscard(chunk.chunk_id)"
+                  :disabled="!!actionLoading[chunk.chunk_id]"
+                  class="py-1.5 px-3 rounded-lg text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-50 transition-colors"
+                >
+                  {{ actionLoading[chunk.chunk_id] === 'discard' ? 'Discarding…' : 'Discard' }}
+                </button>
+              </div>
+            </template>
+
+            <!-- Per-chunk error -->
+            <p v-if="actionError[chunk.chunk_id]" class="mt-2 text-xs text-red-600">
+              {{ actionError[chunk.chunk_id] }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Load more -->
+        <div v-if="kbStore.nextCursor" class="mt-4 text-center">
+          <button
+            @click="loadMore"
+            :disabled="loadingMore"
+            class="py-2 px-6 rounded-lg text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+          >
+            {{ loadingMore ? 'Loading…' : 'Load more' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Production Query Panel -->
+      <div class="mt-10 bg-white rounded-2xl shadow-md p-8">
+        <h2 class="text-lg font-medium text-gray-700 mb-4">Query Production Index</h2>
+
+        <div class="flex gap-3 mb-4">
+          <input
+            v-model="queryText"
+            type="text"
+            placeholder="Enter a midwifery question…"
+            @keydown.enter="runQuery"
+            class="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          />
+          <button
+            @click="runQuery"
+            :disabled="!queryText.trim() || queryLoading"
+            class="py-2 px-4 rounded-lg text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          >
+            {{ queryLoading ? 'Searching…' : 'Search' }}
+          </button>
+        </div>
+
+        <p v-if="queryError" class="text-sm text-red-600 mb-3">{{ queryError }}</p>
+
+        <div v-if="queryResults.length > 0" class="space-y-3">
+          <div
+            v-for="result in queryResults"
+            :key="result.chunk_id"
+            class="border border-gray-100 rounded-xl p-4"
+          >
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Question</p>
+            <p class="text-sm text-gray-800 mb-2">{{ result.question }}</p>
+            <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Snippet</p>
+            <p class="text-sm text-gray-600 italic">{{ result.snippet }}</p>
+          </div>
+        </div>
+
+        <p v-else-if="queryRan && queryResults.length === 0" class="text-sm text-gray-500">
+          No results found.
+        </p>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { createImport, getImport } from '../services/api'
-import type { ImportDetail } from '../services/api'
+import type { ImportDetail, ChunkSummary, QueryResult } from '../services/api'
+import { useKbStore } from '../stores/kb'
+
+// ---- Upload logic (unchanged) -----------------------------------------------
 
 const selectedFile = ref<File | null>(null)
 const sourceFormat = ref<'whatsapp_txt' | 'messenger_json'>('whatsapp_txt')
@@ -144,6 +334,10 @@ function startPolling(id: string) {
       importDetail.value = detail
       if (TERMINAL_STATUSES.has(detail.status)) {
         stopPolling()
+        // Refresh review queue when import completes
+        if (detail.status === 'completed') {
+          kbStore.fetchStagedChunks()
+        }
       }
     } catch {
       // keep polling on transient errors
@@ -180,4 +374,114 @@ const statusBadgeClass = computed(() => {
   if (s === 'no_pairs_found') return 'bg-yellow-100 text-yellow-800'
   return 'bg-blue-100 text-blue-800'
 })
+
+// ---- Review queue -----------------------------------------------------------
+
+const kbStore = useKbStore()
+const loadingChunks = ref(false)
+const loadingMore = ref(false)
+const actionLoading = reactive<Record<string, string | false>>({})
+const actionError = reactive<Record<string, string>>({})
+
+const editingId = ref<string | null>(null)
+const editQuestion = ref('')
+const editAnswer = ref('')
+
+onMounted(async () => {
+  loadingChunks.value = true
+  try {
+    await kbStore.fetchStagedChunks()
+  } finally {
+    loadingChunks.value = false
+  }
+})
+
+async function loadMore() {
+  loadingMore.value = true
+  try {
+    await kbStore.fetchStagedChunks(true)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+async function handleApprove(id: string) {
+  actionLoading[id] = 'approve'
+  delete actionError[id]
+  try {
+    await kbStore.approveChunk(id)
+  } catch (err: unknown) {
+    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+  } finally {
+    actionLoading[id] = false
+  }
+}
+
+async function handleDiscard(id: string) {
+  actionLoading[id] = 'discard'
+  delete actionError[id]
+  try {
+    await kbStore.discardChunk(id)
+  } catch (err: unknown) {
+    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+  } finally {
+    actionLoading[id] = false
+  }
+}
+
+function startEdit(chunk: ChunkSummary) {
+  editingId.value = chunk.chunk_id
+  editQuestion.value = chunk.question
+  editAnswer.value = chunk.answer
+}
+
+function cancelEdit() {
+  editingId.value = null
+  editQuestion.value = ''
+  editAnswer.value = ''
+}
+
+async function submitEditApprove(id: string) {
+  actionLoading[id] = 'edit_approve'
+  delete actionError[id]
+  try {
+    await kbStore.editApproveChunk(id, editQuestion.value, editAnswer.value)
+    cancelEdit()
+  } catch (err: unknown) {
+    actionError[id] = err instanceof Error ? err.message : 'Action failed.'
+  } finally {
+    actionLoading[id] = false
+  }
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+}
+
+// ---- Production query -------------------------------------------------------
+
+const queryText = ref('')
+const queryResults = ref<QueryResult[]>([])
+const queryLoading = ref(false)
+const queryError = ref('')
+const queryRan = ref(false)
+
+async function runQuery() {
+  const q = queryText.value.trim()
+  if (!q) return
+  queryError.value = ''
+  queryLoading.value = true
+  queryRan.value = false
+  try {
+    queryResults.value = await kbStore.queryProduction(q)
+    queryRan.value = true
+  } catch (err: unknown) {
+    queryError.value = err instanceof Error ? err.message : 'Query failed.'
+  } finally {
+    queryLoading.value = false
+  }
+}
 </script>
