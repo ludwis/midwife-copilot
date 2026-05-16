@@ -81,6 +81,12 @@ def _doc_to_summary(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _doc_to_detail(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    detail = _doc_to_summary(doc_id, data)
+    detail["error_message"] = data.get("error_message")
+    return detail
+
+
 # ---------------------------------------------------------------------------
 # Background pipeline
 # ---------------------------------------------------------------------------
@@ -290,3 +296,13 @@ async def list_imports(
     return {
         "imports": [_doc_to_summary(doc.id, doc.to_dict()) for doc in docs]
     }
+
+
+@router.get("/imports/{import_id}")
+async def get_import(import_id: str) -> dict[str, Any]:
+    """Fetch details of a single import run by ID. Returns 404 if not found."""
+    db = _get_firestore()
+    doc = db.collection("kb_imports").document(import_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Import not found")
+    return _doc_to_detail(doc.id, doc.to_dict())
