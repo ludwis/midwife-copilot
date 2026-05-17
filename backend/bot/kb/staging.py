@@ -140,6 +140,8 @@ async def stage_chunks(
     chunks: list[ChunkDraft],
     import_id: str,
     client: Any,  # DocumentServiceAsyncClient | None
+    *,
+    batch_size: int = 50,
 ) -> list[str]:
     """Stage extracted Q&A pairs into Firestore and Vertex AI Search.
 
@@ -166,6 +168,9 @@ async def stage_chunks(
     # Maps question_hash → chunk_id (same contract as deduplicator.check_duplicate).
     existing_hashes: dict[str, str] = {}
 
+    batch = db.batch()
+    batch_count = 0
+
     for draft in chunks:
         c_hash = _content_hash(draft.question, draft.answer)
 
@@ -183,7 +188,7 @@ async def stage_chunks(
 
         now = datetime.now(timezone.utc)
 
-        # Write kb_chunks Firestore document (per data-model.md §kb_chunks).
+        # Stage kb_chunks Firestore document into the current WriteBatch.
         doc_data: dict[str, Any] = {
             "question": draft.question,
             "answer": draft.answer,
@@ -197,9 +202,11 @@ async def stage_chunks(
             "duplicate_of_chunk_id": dedup.duplicate_of_chunk_id,
             "similarity_score": dedup.similarity_score,
         }
-        doc_ref.set(doc_data)
+        batch.set(doc_ref, doc_data)
+        batch_count += 1
 
-        # Emit audit event immediately after Firestore write (per data-model.md §kb_chunk_staged).
+        # Emit audit event per chunk, outside the batch (not transactional with
+        # the Firestore write — see module docstring).
         # NOTE: must call core.audit.write_event — not a locally-bound import — so
         # the integration-test patch on ``core.audit.write_event`` intercepts correctly.
         core.audit.write_event(
@@ -210,6 +217,11 @@ async def stage_chunks(
             content_hash=c_hash,
             duplicate_flag=dedup.flag,
         )
+
+        if batch_count >= batch_size:
+            batch.commit()
+            batch = db.batch()
+            batch_count = 0
 
         # Write to Vertex AI staging data store (best-effort; non-fatal on failure).
         if client is not None:
@@ -225,5 +237,8 @@ async def stage_chunks(
         # Register question hash for subsequent intra-batch dedup checks.
         existing_hashes[_question_hash(draft.question)] = chunk_id
         chunk_ids.append(chunk_id)
+
+    if batch_count > 0:
+        batch.commit()
 
     return chunk_ids

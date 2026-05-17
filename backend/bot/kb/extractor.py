@@ -176,6 +176,51 @@ def _extract_from_turns(
 # ---------------------------------------------------------------------------
 
 
+async def extract_qa_pairs_async(
+    turns: list[dict[str, Any]],
+    *,
+    max_concurrent_windows: int = 4,
+) -> list[ChunkDraft]:
+    """Async wrapper that processes Gemini extraction windows concurrently.
+
+    Uses asyncio.to_thread to run the synchronous _extract_from_turns in a
+    thread pool, with a semaphore to cap concurrent Gemini API calls.
+    The existing sync extract_qa_pairs is unchanged and still used by tests.
+    """
+    import asyncio
+
+    if not turns:
+        return []
+
+    conversation_text = _format_turns(turns)
+    token_estimate = _estimate_tokens(conversation_text)
+
+    if token_estimate <= _TOKEN_THRESHOLD:
+        batches: list[list[dict[str, Any]]] = [turns]
+    else:
+        batches = _build_windows(turns)
+
+    sem = asyncio.Semaphore(max_concurrent_windows)
+
+    async def _process_window(window_turns: list[dict[str, Any]]) -> list[ChunkDraft]:
+        async with sem:
+            return await asyncio.to_thread(_extract_from_turns, window_turns)
+
+    gathered = await asyncio.gather(*[_process_window(b) for b in batches])
+
+    # Flatten and deduplicate across windows (same logic as the sync version).
+    seen: set[tuple[str, str]] = set()
+    all_chunks: list[ChunkDraft] = []
+    for batch_result in gathered:
+        for draft in batch_result:
+            key = (draft.question.strip(), draft.answer.strip())
+            if key not in seen:
+                seen.add(key)
+                all_chunks.append(draft)
+
+    return all_chunks
+
+
 def extract_qa_pairs(turns: list[dict[str, Any]]) -> list[ChunkDraft]:
     """Extract Q&A pairs from *turns* using Gemini 2.0 Flash.
 

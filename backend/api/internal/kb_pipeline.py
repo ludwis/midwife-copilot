@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from google.cloud import firestore, storage
 
 import core.audit
-from bot.kb.extractor import extract_qa_pairs
+from bot.kb.extractor import extract_qa_pairs, extract_qa_pairs_async
 from bot.kb.parsers.messenger import parse_messenger
 from bot.kb.parsers.whatsapp import parse_whatsapp
 from bot.kb.pii_stripper import strip_pii
@@ -145,8 +145,8 @@ async def process_import(import_id: str) -> JSONResponse:
             stripped, _ = strip_pii(turn["content"])
             turn["content"] = stripped
 
-        # --- Step 5: Gemini extraction ---
-        chunks = await asyncio.to_thread(extract_qa_pairs, turns)
+        # --- Step 5: Gemini extraction (concurrent windows) ---
+        chunks = await extract_qa_pairs_async(turns, max_concurrent_windows=4)
 
         if not chunks:
             import_ref.update({"status": "no_pairs_found", "completed_at": datetime.now(timezone.utc)})
