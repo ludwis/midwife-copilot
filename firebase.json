@@ -1,8 +1,7 @@
 {
   "functions": {
     "source": "backend/functions",
-    "runtime": "python312",
-    "ignore": ["venv", ".venv", "__pycache__", "*.pyc"]
+    "runtime": "python312"
   },
   "hosting": {
     "public": "frontend/dist",

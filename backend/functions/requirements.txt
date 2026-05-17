@@ -1,11 +1,4 @@
 firebase-functions>=0.1.0
 firebase-admin>=6.0.0
-google-cloud-firestore>=2.19.0
-google-cloud-storage>=3.0.0
-google-cloud-aiplatform>=1.74.0
-google-genai>=1.0.0
-google-cloud-discoveryengine>=0.13.0
-google-cloud-logging>=3.10.0
-pydantic>=2.0.0
-spacy>=3.8.0
-python-dotenv>=1.0.0
+google-cloud-tasks>=2.16.0
+google-protobuf>=4.0.0
