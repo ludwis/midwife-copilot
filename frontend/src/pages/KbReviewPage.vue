@@ -343,7 +343,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
-import { createImport, getImport } from '../services/api'
+import { createImport, getImport, listImports } from '../services/api'
 import type { ImportDetail, ChunkSummary, QueryResult } from '../services/api'
 import { useKbStore } from '../stores/kb'
 
@@ -469,6 +469,15 @@ const editAnswer = ref('')
 onMounted(async () => {
   loadingChunks.value = true
   try {
+    // Resume polling if there is an import still in progress from a previous session.
+    const { imports } = await listImports('processing')
+    if (imports.length > 0) {
+      const latest = imports[0]
+      importId.value = latest.import_id
+      importDetail.value = { ...latest, error_message: null }
+      startPolling(latest.import_id)
+    }
+
     await kbStore.fetchStagedChunks()
   } finally {
     loadingChunks.value = false

@@ -13,7 +13,7 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      '/api': 'https://stilla-backend-835029788667.europe-west1.run.app',
     },
     historyApiFallback: true,
   },

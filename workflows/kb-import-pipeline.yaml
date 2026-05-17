@@ -1,0 +1,67 @@
+# Cloud Workflow: kb-import-pipeline
+#
+# Triggered by Eventarc on Firestore kb_imports/{importId} document creation.
+# Calls the Cloud Run /internal/kb/process-import/{importId} endpoint, which
+# accepts immediately (202) and runs the full pipeline as a background task.
+#
+# Deploy:
+#   gcloud workflows deploy kb-import-pipeline \
+#     --location=europe-west1 \
+#     --source=workflows/kb-import-pipeline.yaml \
+#     --service-account=kb-pipeline-invoker@PROJECT.iam.gserviceaccount.com \
+#     --set-env-vars=CLOUD_RUN_SERVICE_URL=https://stilla-backend-xxx-ew.a.run.app
+#
+# Eventarc trigger (Firestore is in eur3 multi-region):
+#   gcloud eventarc triggers create kb-import-created \
+#     --location=eur3 \
+#     --destination-workflow=kb-import-pipeline \
+#     --destination-workflow-location=europe-west1 \
+#     --event-filters="type=google.cloud.firestore.document.v1.created" \
+#     --event-filters="database=(default)" \
+#     --event-filters-path-pattern="document=kb_imports/{importId}" \
+#     --event-data-content-type=application/protobuf \
+#     --service-account=kb-pipeline-invoker@PROJECT.iam.gserviceaccount.com
+
+main:
+  params: [event]
+  steps:
+
+    - init:
+        assign:
+          - cloud_run_url: ${sys.get_env("CLOUD_RUN_SERVICE_URL")}
+          # event.subject = "documents/kb_imports/{importId}"
+          - subject_parts: ${text.split(event.subject, "/")}
+          - import_id: ${subject_parts[len(subject_parts) - 1]}
+
+    - log_start:
+        call: sys.log
+        args:
+          text: ${"KB pipeline triggered for import_id=" + import_id}
+          severity: INFO
+
+    - trigger_pipeline:
+        try:
+          call: http.post
+          args:
+            url: ${cloud_run_url + "/internal/kb/process-import/" + import_id}
+            auth:
+              type: OIDC
+              audience: ${cloud_run_url}
+            timeout: 30
+          result: response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 60
+            max_delay: 300
+            multiplier: 2
+
+    - log_done:
+        call: sys.log
+        args:
+          text: ${"Pipeline accepted for import_id=" + import_id + " http_status=" + string(response.code)}
+          severity: INFO
+
+    - done:
+        return: ${response.code}

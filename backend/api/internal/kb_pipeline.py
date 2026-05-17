@@ -1,12 +1,15 @@
-"""Cloud Tasks KB pipeline worker — POST /internal/kb/process-import/{import_id}.
+"""Cloud Workflows KB pipeline worker — POST /internal/kb/process-import/{import_id}.
 
-Authentication is via Google OIDC tokens (issued by Cloud Tasks).
-The endpoint runs the full parse → PII strip → Gemini extract → stage pipeline.
+Authentication is via Google OIDC tokens (issued by Cloud Workflows).
+The endpoint claims the import, returns 202 immediately, and runs the full
+parse → PII strip → Gemini extract → stage pipeline as a background task.
 
-Error handling contract:
-  Fatal errors  → write status=failed, return HTTP 200 (no retry)
-  Transient errors → write status=failed, return HTTP 503 (Cloud Tasks retries)
-  Always write status=failed before returning any error response.
+The pipeline can run for 20–40 minutes. Returning 202 immediately decouples
+the workflow's 30-minute HTTP step timeout from the actual pipeline duration.
+
+Error handling:
+  Fatal errors    → write status=failed, background task exits silently
+  Transient errors → write status=processing so a workflow retry can reclaim it
 """
 from __future__ import annotations
 
@@ -18,12 +21,12 @@ import traceback
 from datetime import datetime, timezone
 
 import google.api_core.exceptions
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from google.cloud import firestore, storage
 
 import core.audit
-from bot.kb.extractor import extract_qa_pairs, extract_qa_pairs_async
+from bot.kb.extractor import extract_qa_pairs_async
 from bot.kb.parsers.messenger import parse_messenger
 from bot.kb.parsers.whatsapp import parse_whatsapp
 from bot.kb.pii_stripper import strip_pii
@@ -42,7 +45,6 @@ _TRANSIENT_EXC = (
     TimeoutError,
 )
 
-# Lazy Firestore singleton (shared with staging.py pattern)
 _db: firestore.Client | None = None
 
 
@@ -58,18 +60,19 @@ def _is_transient(exc: Exception) -> bool:
 
 
 @router.post("/kb/process-import/{import_id}", dependencies=[Depends(require_tasks_oidc)])
-async def process_import(import_id: str) -> JSONResponse:
+async def process_import(import_id: str, background_tasks: BackgroundTasks) -> JSONResponse:
+    """Accept a KB import, claim it, and start the pipeline in the background."""
     db = _get_db()
     import_ref = db.collection("kb_imports").document(import_id)
 
-    # --- Step 1: Idempotency guard via Firestore transaction ---
+    # --- Idempotency guard via Firestore transaction ---
     snapshot = import_ref.get()
     if not snapshot.exists:
-        return JSONResponse({"status": "skipped", "reason": "not_found"}, status_code=200)
+        return JSONResponse({"status": "skipped", "reason": "not_found"})
 
     doc = snapshot.to_dict() or {}
     if doc.get("status") != "processing":
-        return JSONResponse({"status": "skipped", "reason": doc.get("status")}, status_code=200)
+        return JSONResponse({"status": "skipped", "reason": doc.get("status")})
 
     now = datetime.now(timezone.utc)
 
@@ -82,18 +85,32 @@ async def process_import(import_id: str) -> JSONResponse:
         return True
 
     try:
-        transaction = db.transaction()
-        claimed = _claim(transaction, import_ref)
+        claimed = _claim(db.transaction(), import_ref)
     except Exception:
-        return JSONResponse({"status": "skipped", "reason": "concurrent_claim"}, status_code=200)
+        return JSONResponse({"status": "skipped", "reason": "concurrent_claim"})
 
     if not claimed:
-        return JSONResponse({"status": "skipped", "reason": "concurrent_claim"}, status_code=200)
+        return JSONResponse({"status": "skipped", "reason": "concurrent_claim"})
 
     source_format = doc.get("source_format", "")
 
+    # Start the pipeline and return 202 immediately.
+    # The workflow's HTTP step completes as soon as it receives this response;
+    # the actual extraction continues independently in the background.
+    background_tasks.add_task(_run_pipeline, import_id, source_format, import_ref, now)
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
+async def _run_pipeline(
+    import_id: str,
+    source_format: str,
+    import_ref: firestore.DocumentReference,
+    started_at: datetime,
+) -> None:
+    """Run the full extraction pipeline. Called as a FastAPI background task."""
+    blobs: list = []
     try:
-        # --- Step 2: Download from GCS ---
+        # --- Step 1: Download from GCS ---
         bucket_name = os.environ.get("KB_IMPORTS_BUCKET_NAME", "")
         gcs_client = storage.Client()
         bucket_obj = gcs_client.bucket(bucket_name)
@@ -105,14 +122,13 @@ async def process_import(import_id: str) -> JSONResponse:
                 "error_message": "GCS file not found",
                 "completed_at": datetime.now(timezone.utc),
             })
-            return JSONResponse({"status": "failed"}, status_code=200)
+            return
 
         file_bytes = blobs[0].download_as_bytes()
 
-        # --- Step 3: Parse ---
+        # --- Step 2: Parse ---
         if source_format == "whatsapp_txt":
-            text = file_bytes.decode("utf-8")
-            turns = parse_whatsapp(text)
+            turns = parse_whatsapp(file_bytes.decode("utf-8"))
         elif source_format == "messenger_json":
             tmp_path: str | None = None
             try:
@@ -132,24 +148,23 @@ async def process_import(import_id: str) -> JSONResponse:
                 "error_message": f"Unsupported source_format: {source_format}",
                 "completed_at": datetime.now(timezone.utc),
             })
-            return JSONResponse({"status": "failed"}, status_code=200)
+            return
 
-        # Best-effort progress field
         try:
             import_ref.update({"turns_parsed": len(turns)})
         except Exception:  # noqa: BLE001
             pass
 
-        # --- Step 4: PII stripping ---
+        # --- Step 3: PII stripping ---
         for turn in turns:
             stripped, _ = strip_pii(turn["content"])
             turn["content"] = stripped
 
-        # --- Step 5: Gemini extraction (concurrent windows) ---
+        # --- Step 4: Gemini extraction (concurrent windows) ---
         chunks = await extract_qa_pairs_async(turns, max_concurrent_windows=4)
 
         if not chunks:
-            duration_ms = int((datetime.now(timezone.utc) - now).total_seconds() * 1000)
+            duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
             import_ref.update({"status": "no_pairs_found", "completed_at": datetime.now(timezone.utc)})
             core.audit.write_event(
                 "kb_import_completed",
@@ -158,20 +173,21 @@ async def process_import(import_id: str) -> JSONResponse:
                 result="no_pairs_found",
                 duration_ms=duration_ms,
             )
-            return JSONResponse({"status": "no_pairs_found"}, status_code=200)
+            return
 
-        # --- Step 6: Stage chunks ---
+        # --- Step 5: Stage chunks ---
         chunk_ids = await stage_chunks(chunks, import_id, client=None)
 
-        # --- Step 7: Count duplicates and update Firestore ---
-        dup_query = (
+        # --- Step 6: Count duplicates and update Firestore ---
+        db = _get_db()
+        dup_count = len(
             db.collection("kb_chunks")
             .where("import_id", "==", import_id)
             .where("duplicate_flag", "in", ["exact", "near"])
+            .get()
         )
-        dup_count = len(dup_query.get())
 
-        duration_ms = int((datetime.now(timezone.utc) - now).total_seconds() * 1000)
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
         import_ref.update({
             "status": "completed",
             "completed_at": datetime.now(timezone.utc),
@@ -179,7 +195,7 @@ async def process_import(import_id: str) -> JSONResponse:
             "chunks_flagged_duplicate": dup_count,
         })
 
-        # --- Step 8: Audit event + GCS cleanup ---
+        # --- Step 7: Audit event + GCS cleanup ---
         core.audit.write_event(
             "kb_import_completed",
             actor="system",
@@ -196,20 +212,17 @@ async def process_import(import_id: str) -> JSONResponse:
         except Exception:  # noqa: BLE001
             pass
 
-        return JSONResponse({"status": "completed"}, status_code=200)
-
     except Exception as exc:
-        logger.error(
-            "KB pipeline failed for import %s:\n%s", import_id, traceback.format_exc()
-        )
+        logger.error("KB pipeline failed for import %s:\n%s", import_id, traceback.format_exc())
         if _is_transient(exc):
-            # Reset to processing so the Cloud Tasks retry can claim it again.
-            # Leaving status=extracting would break the idempotency guard on retry.
-            import_ref.update({"status": "processing"})
-            raise HTTPException(status_code=503, detail=str(exc))
-        import_ref.update({
-            "status": "failed",
-            "error_message": str(exc)[:500],
-            "completed_at": datetime.now(timezone.utc),
-        })
-        return JSONResponse({"status": "failed"}, status_code=200)
+            # Reset to processing so a workflow retry can reclaim it.
+            try:
+                import_ref.update({"status": "processing"})
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            import_ref.update({
+                "status": "failed",
+                "error_message": str(exc)[:500],
+                "completed_at": datetime.now(timezone.utc),
+            })

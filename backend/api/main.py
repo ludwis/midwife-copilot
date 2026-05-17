@@ -1,8 +1,10 @@
 """FastAPI application factory for the Stilla admin backend.
 
 Startup sequence (lifespan):
-  1. Load the spaCy model once into module-level `nlp` — reused by the
+  1. Initialise Vertex AI client.
+  2. Load the spaCy model once into module-level `nlp` — reused by the
      extraction pipeline so the model is never loaded per-request.
+  The embedding deduplication cache loads lazily on first pipeline run.
 
 Router layout:
   /api/admin   — all KB admin endpoints; protected by X-Admin-Token auth.
@@ -24,11 +26,12 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 import spacy
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .admin.kb import router as kb_router
-from .auth import require_admin_token
+from .auth import require_firebase_token
 from .internal.kb_pipeline import router as pipeline_router
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,11 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     """Load heavy singletons on startup; release on shutdown (if needed)."""
     global nlp
 
+    import firebase_admin  # type: ignore[import]
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app()
+        logger.info("Firebase Admin SDK initialised.")
+
     import vertexai  # type: ignore[import]
     project = os.environ.get("GCP_PROJECT_ID", "")
     vertexai.init(project=project, location="global")
@@ -54,8 +62,6 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     nlp = spacy.load(model_name)
     logger.info("spaCy model loaded.")
 
-    import bot.kb.deduplicator  # triggers GCS embedding cache download at startup
-    logger.info("Embedding cache pre-warmed")
     yield
 
 
@@ -63,6 +69,28 @@ app = FastAPI(
     title="Stilla Admin API",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# CORS: allow Firebase Hosting origins + localhost dev server.
+# Override via CORS_ORIGINS env var (comma-separated) if needed.
+_default_origins = [
+    "https://midwife-copilot.web.app",
+    "https://midwife-copilot.firebaseapp.com",
+    "http://localhost:5173",
+    "http://localhost:4173",  # vite preview
+]
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get("CORS_ORIGINS", "").split(",")
+    if o.strip()
+] or _default_origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -75,11 +103,11 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         headers=dict(exc.headers) if exc.headers else None,
     )
 
-# All /api/admin/** routes require a valid X-Admin-Token header.
+# All /api/admin/** routes require a valid Firebase ID token.
 app.include_router(
     kb_router,
     prefix="/api/admin",
-    dependencies=[Depends(require_admin_token)],
+    dependencies=[Depends(require_firebase_token)],
 )
 
 # Internal service-to-service routes (auth handled per-route via OIDC).

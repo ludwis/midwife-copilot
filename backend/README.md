@@ -1,22 +1,55 @@
-# Backend — Stilla App (Phase 1: Knowledge Foundation)
+# backend/
 
-FastAPI backend for the KB ingestion pipeline, admin review API, and audit logging.
+Python backend for Stilla. Contains three independently deployable components in one codebase:
+
+| Directory | Deployed as | Trigger |
+|---|---|---|
+| `api/` | Cloud Run FastAPI service | HTTP (admin + internal) |
+| `bot/`, `core/` | Shared library (Cloud Run only) | — |
+
+The Firestore → pipeline trigger is handled by a **Cloud Workflow** (`workflows/kb-import-pipeline.yaml` at the project root) invoked via an Eventarc trigger — no Firebase Function or Cloud Tasks queue required.
 
 ---
 
-## Prerequisites
+## Folder structure
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Python | 3.12 | `pyenv install 3.12` |
-| gcloud CLI | latest | `brew install google-cloud-sdk` |
-| Firebase CLI | latest | `npm install -g firebase-tools` |
+```
+backend/
+├── api/                    # Cloud Run FastAPI service
+│   ├── main.py             # App factory, lifespan startup, router mounts
+│   ├── auth.py             # Firebase ID token + legacy X-Admin-Token auth
+│   ├── admin/kb/           # /api/admin/kb/** — frontend-facing API
+│   │   ├── imports.py      # Upload + status endpoints
+│   │   ├── chunks.py       # Review (approve / discard) endpoints
+│   │   └── production.py   # Vertex AI Search test query
+│   └── internal/           # /internal/** — Cloud Workflow-facing API
+│       ├── auth.py         # OIDC token validation
+│       └── kb_pipeline.py  # Full extraction pipeline endpoint
+│
+├── bot/kb/                 # KB pipeline business logic
+│   ├── parsers/            # WhatsApp .txt and Messenger JSON parsers
+│   ├── extractor.py        # Gemini Q&A extraction (async parallel windows)
+│   ├── pii_stripper.py     # spaCy NER + regex PII removal
+│   ├── deduplicator.py     # SHA-256 + cosine similarity deduplication
+│   ├── staging.py          # Firestore chunk writer (batched)
+│   └── promotion.py        # Vertex AI Search promotion
+│
+├── core/
+│   └── audit.py            # Dual-write: Cloud Logging + GCS JSONL
+│
+├── tests/
+│   ├── unit/               # No GCP, no emulator required
+│   └── integration/        # Firestore emulator + VCR cassettes
+│
+├── Dockerfile              # Cloud Run container (entrypoint: api/main.py)
+└── requirements.txt        # Cloud Run deps (does NOT include firebase-functions)
+```
 
 ---
 
 ## Setup
 
-### 1. Create virtual environment
+### 1. Virtual environment
 
 ```bash
 python3.12 -m venv .venv
@@ -29,117 +62,86 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Download spaCy model (one-time)
+The spaCy model is installed automatically via the wheel URL in `requirements.txt` — no separate `python -m spacy download` step needed.
 
-```bash
-python -m spacy download xx_ent_wiki_sm
-```
-
-### 4. Authenticate with GCP
+### 3. Authenticate with GCP
 
 ```bash
 gcloud auth application-default login
-gcloud config set project $GCP_PROJECT_ID
+gcloud config set project midwife-copilot
 ```
 
----
-
-## Environment Variables
-
-Copy `.env.example` from the repo root into the `backend/` directory:
+### 4. Configure environment
 
 ```bash
 cp ../.env.example .env
+# Edit .env with your values
 ```
-
-The backend loads `backend/.env` automatically at startup via `python-dotenv` — no manual `export` needed.
-
-Key variables:
-
-| Variable | Description |
-|----------|-------------|
-| `FIRESTORE_EMULATOR_HOST` | Set to `localhost:8080` for local dev |
-| `GCP_PROJECT_ID` | Your GCP project ID |
-| `ADMIN_TOKEN` | Long random secret for admin API auth |
-| `VERTEX_SEARCH_DATASTORE_PRODUCTION` | Vertex AI Search data store ID (production) |
-| `VERTEX_SEARCH_DATASTORE_STAGING` | Vertex AI Search data store ID (staging) |
-| `VERTEX_SEARCH_LOCATION` | `eu` |
-| `AUDIT_BUCKET_NAME` | GCS bucket for audit logs |
-| `GEMINI_MODEL` | e.g. `gemini-2.0-flash-001` |
-| `SPACY_MODEL` | `xx_ent_wiki_sm` |
 
 ---
 
-## Start Firestore Emulator
+## Environment variables
+
+| Variable | Used by | Required | Description |
+|---|---|---|---|
+| `GCP_PROJECT_ID` | api/, bot/ | Yes | Google Cloud project ID |
+| `ADMIN_TOKEN` | api/auth.py | No | Legacy static token for `X-Admin-Token` header (server-to-server scripts only) |
+| `KB_IMPORTS_BUCKET_NAME` | api/, bot/ | Yes | GCS bucket for temporary chat export uploads |
+| `AUDIT_BUCKET_NAME` | core/audit.py | Yes | GCS bucket for append-only JSONL audit logs |
+| `VERTEX_SEARCH_DATASTORE_PRODUCTION` | bot/kb/ | Yes | Vertex AI Search production data store ID |
+| `VERTEX_SEARCH_DATASTORE_STAGING` | bot/kb/ | Yes | Vertex AI Search staging data store ID |
+| `VERTEX_SEARCH_LOCATION` | bot/kb/ | Yes | `eu` |
+| `CLOUD_RUN_SERVICE_URL` | api/internal/auth.py | Yes | This service's URL (OIDC audience) — also injected into the Cloud Workflow at deploy time |
+| `WORKFLOW_SA_EMAIL` | api/internal/auth.py | Yes | Workflow SA email (OIDC email claim to accept) — set to `kb-pipeline-invoker@...` |
+| `GEMINI_MODEL` | bot/kb/extractor.py | No | Gemini model ID (default: `gemini-2.0-flash-001`) |
+| `SPACY_MODEL` | api/main.py | No | spaCy model (default: `xx_ent_wiki_sm`) |
+| `DUPLICATE_SIMILARITY_THRESHOLD` | bot/kb/deduplicator.py | No | Near-dup threshold (default: `0.92`) |
+| `FIRESTORE_EMULATOR_HOST` | Dev only | No | `localhost:8080` when using the emulator |
+
+---
+
+## Running locally
 
 ```bash
-# First-time only: initialise emulators (select Firestore, accept port 8080)
-firebase init emulators
-
-# Start the emulator
+# Start Firestore emulator (separate terminal)
 firebase emulators:start --only firestore
+
+# Start FastAPI
+FIRESTORE_EMULATOR_HOST=localhost:8080 uvicorn api.main:app --reload --port 8000
 ```
 
-The emulator UI is available at `http://localhost:4000`.
+- API: http://localhost:8000
+- Swagger UI: http://localhost:8000/docs
 
 ---
 
-## Run the Backend
+## Running tests
 
 ```bash
-uvicorn api.main:app --reload --port 8000
-```
-
-- API: `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
-
----
-
-## Running Tests
-
-```bash
-# Unit tests (no emulator or GCP required)
+# Unit tests — no external services
 pytest tests/unit/ -v
 
-# Integration tests (requires Firestore emulator on localhost:8080)
+# Integration tests — requires Firestore emulator
 FIRESTORE_EMULATOR_HOST=localhost:8080 pytest tests/integration/ -v
 
-# Golden dataset acceptance test
-pytest tests/integration/test_kb_pipeline.py::test_golden_dataset -v
+# Full suite
+FIRESTORE_EMULATOR_HOST=localhost:8080 pytest tests/ -v
 
-# Vertex AI Search / Gemini tests (requires real GCP credentials)
+# Live Vertex AI / Gemini tests (real GCP credentials required)
 INTEGRATION=true pytest tests/integration/test_vertex_search.py -v
 ```
 
----
-
-## Project Structure
-
-```
-backend/
-├── api/           # FastAPI app and routers
-│   └── admin/kb/  # Admin endpoints: imports, chunks, production query
-├── bot/           # KB ingestion pipeline (parsers, extractor, deduplication)
-│   └── kb/
-├── core/          # Shared utilities (audit logging, Firestore client)
-├── tests/
-│   ├── unit/
-│   └── integration/
-└── requirements.txt
-```
+VCR cassettes in `tests/integration/cassettes/` replay pre-recorded Gemini responses so CI runs without live API calls.
 
 ---
 
-## Key Admin Endpoints
+## Deployment
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/admin/kb/imports` | Upload a chat export (WhatsApp `.txt`) |
-| `GET` | `/api/admin/kb/imports/{id}` | Poll import status |
-| `GET` | `/api/admin/kb/chunks` | List staged chunks awaiting review |
-| `PATCH` | `/api/admin/kb/chunks/{id}` | Approve / edit-approve / discard a chunk |
-| `GET` | `/api/admin/kb/production/query` | Query the production Vertex AI Search index |
+Each component deploys independently. See the root [`README.md`](../README.md) for the full Cloud Build pipeline.
 
-All admin endpoints require `X-Admin-Token: <ADMIN_TOKEN>` header.
+```bash
+# Full deployment (Cloud Run + Workflow + Eventarc trigger)
+gcloud builds submit --config cloudbuild.yaml --project midwife-copilot
+```
 
-File upload limit: **10 MB**. Exceeding this returns `413` with `{"error": "File exceeds 10 MB limit"}`.
+For `api/` service details see [`api/README.md`](api/README.md).

@@ -1,14 +1,12 @@
+import { getAuth } from 'firebase/auth'
+
 const BASE_URL = '/api'
 
-function getHeaders(): Record<string, string> {
-  const token = import.meta.env.VITE_ADMIN_TOKEN as string | undefined
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  if (token) {
-    headers['X-Admin-Token'] = token
-  }
-  return headers
+async function getAuthHeader(): Promise<Record<string, string>> {
+  const currentUser = getAuth().currentUser
+  if (!currentUser) return {}
+  const token = await currentUser.getIdToken()
+  return { Authorization: `Bearer ${token}` }
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -47,19 +45,13 @@ export async function createImport(
   file: File,
   sourceFormat: 'whatsapp_txt' | 'messenger_json',
 ): Promise<ImportCreatedResponse> {
-  const token = import.meta.env.VITE_ADMIN_TOKEN as string | undefined
   const formData = new FormData()
   formData.append('file', file)
   formData.append('source_format', sourceFormat)
 
-  const headers: Record<string, string> = {}
-  if (token) {
-    headers['X-Admin-Token'] = token
-  }
-
   const res = await fetch(`${BASE_URL}/admin/kb/imports`, {
     method: 'POST',
-    headers,
+    headers: await getAuthHeader(),
     body: formData,
   })
   return handleResponse<ImportCreatedResponse>(res)
@@ -70,13 +62,13 @@ export async function listImports(status?: string): Promise<{ imports: ImportSum
   if (status) params.set('status', status)
 
   const url = `${BASE_URL}/admin/kb/imports${params.size ? `?${params}` : ''}`
-  const res = await fetch(url, { headers: getHeaders() })
+  const res = await fetch(url, { headers: await getAuthHeader() })
   return handleResponse<{ imports: ImportSummary[] }>(res)
 }
 
 export async function getImport(id: string): Promise<ImportDetail> {
   const res = await fetch(`${BASE_URL}/admin/kb/imports/${encodeURIComponent(id)}`, {
-    headers: getHeaders(),
+    headers: await getAuthHeader(),
   })
   return handleResponse<ImportDetail>(res)
 }
@@ -148,13 +140,13 @@ export async function listChunks(params: {
   if (params.limit != null) q.set('limit', String(params.limit))
 
   const url = `${BASE_URL}/admin/kb/chunks${q.size ? `?${q}` : ''}`
-  const res = await fetch(url, { headers: getHeaders() })
+  const res = await fetch(url, { headers: await getAuthHeader() })
   return handleResponse<ChunksListResponse>(res)
 }
 
 export async function getChunk(id: string): Promise<ChunkDetail> {
   const res = await fetch(`${BASE_URL}/admin/kb/chunks/${encodeURIComponent(id)}`, {
-    headers: getHeaders(),
+    headers: await getAuthHeader(),
   })
   return handleResponse<ChunkDetail>(res)
 }
@@ -162,7 +154,7 @@ export async function getChunk(id: string): Promise<ChunkDetail> {
 export async function reviewChunk(id: string, action: ReviewAction): Promise<ChunkDetail> {
   const res = await fetch(`${BASE_URL}/admin/kb/chunks/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers: getHeaders(),
+    headers: { 'Content-Type': 'application/json', ...(await getAuthHeader()) },
     body: JSON.stringify(action),
   })
   return handleResponse<ChunkDetail>(res)
@@ -173,7 +165,7 @@ export async function queryProduction(q: string, limit?: number): Promise<QueryR
   if (limit != null) params.set('limit', String(limit))
 
   const res = await fetch(`${BASE_URL}/admin/kb/production/query?${params}`, {
-    headers: getHeaders(),
+    headers: await getAuthHeader(),
   })
   return handleResponse<QueryResponse>(res)
 }

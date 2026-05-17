@@ -1,8 +1,4 @@
 {
-  "functions": {
-    "source": "backend/functions",
-    "runtime": "python312"
-  },
   "hosting": {
     "public": "frontend/dist",
     "ignore": [

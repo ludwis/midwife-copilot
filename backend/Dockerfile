@@ -23,5 +23,6 @@ ENV PORT=8080
 EXPOSE 8080
 
 # Use 1 worker per container — Cloud Run scales horizontally via instances.
-# --timeout 0 prevents uvicorn from killing long-running requests (Gemini extraction).
-CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 75 --timeout 0"]
+# Long-running requests (Gemini extraction) are not killed by uvicorn by default;
+# request duration is governed by Cloud Run --timeout=3600 at the service level.
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 75"]
