@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .admin.kb import router as kb_router
 from .auth import require_admin_token
+from .internal.kb_pipeline import router as pipeline_router
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,9 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     logger.info("Loading spaCy model '%s'…", model_name)
     nlp = spacy.load(model_name)
     logger.info("spaCy model loaded.")
+
+    import bot.kb.deduplicator  # triggers GCS embedding cache download at startup
+    logger.info("Embedding cache pre-warmed")
     yield
 
 
@@ -77,6 +81,9 @@ app.include_router(
     prefix="/api/admin",
     dependencies=[Depends(require_admin_token)],
 )
+
+# Internal service-to-service routes (auth handled per-route via OIDC).
+app.include_router(pipeline_router, prefix="/internal")
 
 # Serve the compiled Vue PWA from Cloud Run (single-artifact deployment).
 # Skipped in development where `frontend/dist` does not yet exist.
