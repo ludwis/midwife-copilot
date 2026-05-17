@@ -149,12 +149,14 @@ async def process_import(import_id: str) -> JSONResponse:
         chunks = await extract_qa_pairs_async(turns, max_concurrent_windows=4)
 
         if not chunks:
+            duration_ms = int((datetime.now(timezone.utc) - now).total_seconds() * 1000)
             import_ref.update({"status": "no_pairs_found", "completed_at": datetime.now(timezone.utc)})
             core.audit.write_event(
                 "kb_import_completed",
                 actor="system",
                 import_id=import_id,
                 result="no_pairs_found",
+                duration_ms=duration_ms,
             )
             return JSONResponse({"status": "no_pairs_found"}, status_code=200)
 
@@ -169,6 +171,7 @@ async def process_import(import_id: str) -> JSONResponse:
         )
         dup_count = len(dup_query.get())
 
+        duration_ms = int((datetime.now(timezone.utc) - now).total_seconds() * 1000)
         import_ref.update({
             "status": "completed",
             "completed_at": datetime.now(timezone.utc),
@@ -184,6 +187,7 @@ async def process_import(import_id: str) -> JSONResponse:
             result="completed",
             chunks_extracted=len(chunk_ids),
             chunks_flagged_duplicate=dup_count,
+            duration_ms=duration_ms,
         )
 
         try:
@@ -198,11 +202,14 @@ async def process_import(import_id: str) -> JSONResponse:
         logger.error(
             "KB pipeline failed for import %s:\n%s", import_id, traceback.format_exc()
         )
+        if _is_transient(exc):
+            # Reset to processing so the Cloud Tasks retry can claim it again.
+            # Leaving status=extracting would break the idempotency guard on retry.
+            import_ref.update({"status": "processing"})
+            raise HTTPException(status_code=503, detail=str(exc))
         import_ref.update({
             "status": "failed",
             "error_message": str(exc)[:500],
             "completed_at": datetime.now(timezone.utc),
         })
-        if _is_transient(exc):
-            raise HTTPException(status_code=503, detail=str(exc))
         return JSONResponse({"status": "failed"}, status_code=200)

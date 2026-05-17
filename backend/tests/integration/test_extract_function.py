@@ -1,18 +1,14 @@
-"""Integration tests for the Firebase Cloud Function extract_kb_import.
+"""Integration tests for the Firebase Cloud Function extract_kb_import (stub).
+
+The function was refactored in Phase 2 to only enqueue a Cloud Tasks task;
+the full pipeline now lives in the /internal/kb/process-import endpoint.
 
 Tests call the handler directly (no Firebase runtime required). Firebase
 packages (firebase_admin, firebase_functions) are stubbed in sys.modules
 before import so the test suite runs without installing them.
 
-The Firestore emulator is used for real document read/write assertions.
-GCS is mocked to return the golden WhatsApp export bytes.
-Gemini calls are replayed via VCR cassettes.
-
-Requirements to run:
-  FIRESTORE_EMULATOR_HOST=localhost:8080  (Firestore emulator must be running)
-  VCR cassettes in cassettes/test_extract_function/
-
-Fixtures `firestore_client` and `captured_audit_events` come from conftest.py.
+The Firestore emulator is used to pre-seed realistic docs; the function
+itself never reads Firestore — it only calls Cloud Tasks.
 """
 from __future__ import annotations
 
@@ -44,10 +40,8 @@ for _name, _stub in [
 # ---------------------------------------------------------------------------
 # Standard imports (after stubs are in place)
 # ---------------------------------------------------------------------------
-import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 import google.auth.credentials
 import pytest
@@ -55,11 +49,11 @@ from google.cloud import firestore
 
 # Import the function under test (stubs above prevent ImportError).
 from functions.main import extract_kb_import  # noqa: E402
+import functions.main as _fm  # module reference for patching module-level vars
 
 
 # ---------------------------------------------------------------------------
-# Credential stub — prevents genai.Client(vertexai=True) from refreshing
-# OAuth2 tokens via oauth2.googleapis.com, which VCR would block.
+# Credential stub — prevents any OAuth2 token refresh during tests.
 # ---------------------------------------------------------------------------
 
 class _StaticCredentials(google.auth.credentials.Credentials):
@@ -76,42 +70,24 @@ class _StaticCredentials(google.auth.credentials.Credentials):
 
 @pytest.fixture(autouse=True)
 def _stub_gcp_auth(monkeypatch):
-    """Patch google.auth.default so genai.Client never makes OAuth2 calls.
-
-    Also sets GOOGLE_CLOUD_PROJECT and GCP_PROJECT_ID so that both the
-    staging module's lazy firestore.Client() and the extractor use the same
-    test-project namespace as the firestore_client fixture.
-    """
+    """Patch google.auth.default so no OAuth2 calls are made."""
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
     monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
     creds = _StaticCredentials()
     with patch("google.auth.default", return_value=(creds, "test-project")):
         yield
 
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _PROJECT_ID = "test-project"
-
-_PII_PATTERNS = [
-    re.compile(r"\+?\d[\d\s\-]{7,}\d"),
-    re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"),
-    re.compile(r"\b\d{11}\b"),
-]
-
-_GOLDEN_WHATSAPP_EXPORT = """\
-[15/05/2026, 09:00:00] - Anna Kowalska: Czy ból w okolicy miednicy jest normalny w 36. tygodniu?
-[15/05/2026, 09:01:30] - Położna: Tak, ból miednicy w 36. tygodniu jest typowy. Dziecko opuszcza się ku dołowi.
-[15/05/2026, 09:01:45] - Położna: Mój numer to +48 601 234 567 jeśli będziesz potrzebować pomocy.
-[15/05/2026, 09:02:00] - Anna Kowalska: Dziękuję bardzo. Napiszę na anna.kowalska@gmail.com
-Messages and calls are end-to-end encrypted. No one outside of this chat, not even WhatsApp, can read or listen to them.
-"""
-
-_ONLY_SYSTEM_MESSAGES = """\
-[15/05/2026, 09:00:00] - Messages and calls are end-to-end encrypted.
-Messages and calls are end-to-end encrypted. No one outside of this chat, not even WhatsApp, can read or listen to them.
-"""
+_CLOUD_TASKS_QUEUE = (
+    "projects/test-project/locations/europe-west1/queues/kb-pipeline"
+)
+_CLOUD_RUN_URL = "https://stilla-test.run.app"
+_TASKS_SA_EMAIL = "tasks-sa@test.iam.gserviceaccount.com"
 
 
 # ---------------------------------------------------------------------------
@@ -131,18 +107,6 @@ def mock_event(import_id: str):
     event = MagicMock()
     event.params = {"importId": import_id}
     return event
-
-
-@pytest.fixture()
-def mock_gcs_download(monkeypatch, import_id: str):
-    """Patch storage.Client so GCS download returns the golden export bytes."""
-    mock_blob = MagicMock()
-    mock_blob.download_as_bytes.return_value = _GOLDEN_WHATSAPP_EXPORT.encode("utf-8")
-    mock_client = MagicMock()
-    mock_client.bucket.return_value.blob.return_value = mock_blob
-
-    import functions.main as _fm  # already imported; get the module reference
-    monkeypatch.setattr(_fm.storage, "Client", lambda: mock_client)
 
 
 def _seed_processing_doc(
@@ -169,166 +133,64 @@ def _seed_processing_doc(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.vcr
 @pytest.mark.integration
-def test_extract_function_success(
+def test_stub_enqueues_cloud_task(
     firestore_client: firestore.Client,
     import_id: str,
     mock_event,
-    mock_gcs_download,
-    captured_audit_events: list[dict[str, Any]],
+    monkeypatch,
 ):
-    """Function runs the full pipeline and transitions the doc to status=completed."""
+    """Stub enqueues exactly one Cloud Tasks task with the correct URL and deadline.
+
+    Why: the function's sole responsibility is to hand off work to Cloud Tasks.
+    We verify: (1) exactly one task is created, (2) the task URL targets the
+    internal pipeline endpoint for this import, (3) dispatch_deadline is 3600s
+    so Cloud Run has the full hour to process large exports.
+    """
     _seed_processing_doc(firestore_client, import_id)
 
-    with patch("functions.main.admin_firestore") as mock_afs:
-        mock_afs.client.return_value = firestore_client
+    # Patch module-level vars — these are read at import time, not call time,
+    # so monkeypatch.setenv alone would not affect them.
+    monkeypatch.setattr(_fm, "CLOUD_TASKS_QUEUE", _CLOUD_TASKS_QUEUE)
+    monkeypatch.setattr(_fm, "CLOUD_RUN_SERVICE_URL", _CLOUD_RUN_URL)
+    monkeypatch.setattr(_fm, "TASKS_SA_EMAIL", _TASKS_SA_EMAIL)
+
+    mock_tasks_client = MagicMock()
+    with patch("functions.main.tasks_v2.CloudTasksClient", return_value=mock_tasks_client):
         extract_kb_import(mock_event)
 
-    doc = firestore_client.collection("kb_imports").document(import_id).get()
-    assert doc.exists
-    data = doc.to_dict()
-    assert data["status"] == "completed", (
-        f"Expected status=completed, got {data['status']!r}; "
-        f"error_message={data.get('error_message')!r}"
-    )
-    assert data.get("chunks_extracted", 0) > 0, "At least one Q&A pair must be extracted"
-    assert "completed_at" in data
+    assert mock_tasks_client.create_task.call_count == 1
 
-
-@pytest.mark.vcr
-@pytest.mark.integration
-def test_extract_function_creates_chunks(
-    firestore_client: firestore.Client,
-    import_id: str,
-    mock_event,
-    mock_gcs_download,
-    captured_audit_events: list[dict[str, Any]],
-):
-    """kb_chunks docs are created with status=staged and no PII in question/answer."""
-    _seed_processing_doc(firestore_client, import_id)
-
-    with patch("functions.main.admin_firestore") as mock_afs:
-        mock_afs.client.return_value = firestore_client
-        extract_kb_import(mock_event)
-
-    staged_chunks = list(
-        firestore_client.collection("kb_chunks")
-        .where("import_id", "==", import_id)
-        .where("status", "==", "staged")
-        .stream()
-    )
-    assert len(staged_chunks) > 0, f"Expected staged kb_chunks for import_id={import_id!r}"
-
-    for chunk_doc in staged_chunks:
-        chunk = chunk_doc.to_dict()
-        assert chunk.get("question"), f"chunk {chunk_doc.id}: question must be non-empty"
-        assert chunk.get("answer"), f"chunk {chunk_doc.id}: answer must be non-empty"
-        assert "content_hash" in chunk, f"chunk {chunk_doc.id}: content_hash must be set"
-        assert chunk.get("status") == "staged"
-
-        combined = chunk["question"] + " " + chunk["answer"]
-        for pattern in _PII_PATTERNS:
-            assert not pattern.search(combined), (
-                f"PII pattern {pattern.pattern!r} found in chunk {chunk_doc.id}: "
-                f"{combined[:120]!r}"
-            )
-
-
-@pytest.mark.vcr
-@pytest.mark.integration
-def test_extract_function_emits_audit_events(
-    firestore_client: firestore.Client,
-    import_id: str,
-    mock_event,
-    mock_gcs_download,
-    captured_audit_events: list[dict[str, Any]],
-):
-    """Function emits kb_import_completed and kb_chunk_staged audit events."""
-    _seed_processing_doc(firestore_client, import_id)
-
-    with patch("functions.main.admin_firestore") as mock_afs:
-        mock_afs.client.return_value = firestore_client
-        extract_kb_import(mock_event)
-
-    completed_events = [e for e in captured_audit_events if e["event_type"] == "kb_import_completed"]
-    assert len(completed_events) == 1, (
-        f"Expected 1 kb_import_completed event, got {len(completed_events)}"
-    )
-    assert completed_events[0]["import_id"] == import_id
-    assert completed_events[0]["status"] == "completed"
-
-    staged_events = [e for e in captured_audit_events if e["event_type"] == "kb_chunk_staged"]
-    assert len(staged_events) > 0, "Expected at least one kb_chunk_staged audit event"
-    for evt in staged_events:
-        assert "chunk_id" in evt, "kb_chunk_staged event must include chunk_id"
-        assert evt["import_id"] == import_id
-        assert "content_hash" in evt, "kb_chunk_staged event must include content_hash"
+    task = mock_tasks_client.create_task.call_args[1]["task"]
+    assert f"/internal/kb/process-import/{import_id}" in task.http_request.url
+    assert task.dispatch_deadline.seconds == 3600
 
 
 @pytest.mark.integration
-def test_extract_function_idempotency(
-    firestore_client: firestore.Client,
+def test_stub_idempotency_not_needed(
     import_id: str,
     mock_event,
-    captured_audit_events: list[dict[str, Any]],
+    monkeypatch,
 ):
-    """Function skips processing if doc status is already completed."""
-    # Pre-seed with completed status.
-    firestore_client.collection("kb_imports").document(import_id).set(
-        {
-            "status": "completed",
-            "gcs_path": "gs://test-bucket/test.txt",
-            "source_format": "whatsapp_txt",
-            "submitted_at": datetime.now(timezone.utc),
-            "completed_at": datetime.now(timezone.utc),
-            "chunks_extracted": 1,
-            "chunks_flagged_duplicate": 0,
-        }
-    )
+    """The stub does NOT check Firestore status before enqueuing.
 
-    with patch("functions.main.admin_firestore") as mock_afs:
-        mock_afs.client.return_value = firestore_client
+    Idempotency is handled downstream by the /internal/kb/process-import
+    endpoint, which uses a Firestore transaction to atomically claim the
+    import document. The stub intentionally enqueues even when no Firestore
+    document exists — the endpoint will skip the job if it was already
+    processed or never existed.
+
+    This is by design: keeping the stub stateless makes it simpler and
+    eliminates a race condition where a doc might not yet be visible to the
+    function when the event fires.
+    """
+    monkeypatch.setattr(_fm, "CLOUD_TASKS_QUEUE", _CLOUD_TASKS_QUEUE)
+    monkeypatch.setattr(_fm, "CLOUD_RUN_SERVICE_URL", _CLOUD_RUN_URL)
+    monkeypatch.setattr(_fm, "TASKS_SA_EMAIL", _TASKS_SA_EMAIL)
+
+    mock_tasks_client = MagicMock()
+    # No Firestore doc pre-seeded — the stub still enqueues the task.
+    with patch("functions.main.tasks_v2.CloudTasksClient", return_value=mock_tasks_client):
         extract_kb_import(mock_event)
 
-    # Doc must be unchanged.
-    doc = firestore_client.collection("kb_imports").document(import_id).get()
-    assert doc.get("status") == "completed"
-    # No audit events should have been emitted (function returned early).
-    assert len(captured_audit_events) == 0, (
-        f"No audit events expected for idempotent call; got {captured_audit_events}"
-    )
-
-
-@pytest.mark.integration
-def test_extract_function_no_pairs(
-    firestore_client: firestore.Client,
-    import_id: str,
-    mock_event,
-    captured_audit_events: list[dict[str, Any]],
-):
-    """Function transitions to no_pairs_found when extract_qa_pairs returns []."""
-    _seed_processing_doc(firestore_client, import_id)
-
-    # Mock GCS to return content, mock extractor to return no pairs.
-    mock_blob = MagicMock()
-    mock_blob.download_as_bytes.return_value = _ONLY_SYSTEM_MESSAGES.encode("utf-8")
-    mock_client = MagicMock()
-    mock_client.bucket.return_value.blob.return_value = mock_blob
-
-    import functions.main as _fm
-
-    with patch("functions.main.admin_firestore") as mock_afs, \
-         patch.object(_fm.storage, "Client", lambda: mock_client), \
-         patch("functions.main.extract_qa_pairs", return_value=[]):
-        mock_afs.client.return_value = firestore_client
-        extract_kb_import(mock_event)
-
-    doc = firestore_client.collection("kb_imports").document(import_id).get()
-    assert doc.get("status") == "no_pairs_found", (
-        f"Expected no_pairs_found, got {doc.get('status')!r}"
-    )
-
-    completed_events = [e for e in captured_audit_events if e["event_type"] == "kb_import_completed"]
-    assert len(completed_events) == 1
-    assert completed_events[0]["status"] == "no_pairs_found"
+    assert mock_tasks_client.create_task.call_count == 1

@@ -133,7 +133,7 @@ def test_approve_transitions_chunk_to_promoted(
     fake_vertex_id = f"vertex-prod-{chunk_id}"
 
     async def _fake_promote(
-        chunk_id: str, question: str, answer: str, content_hash: str
+        chunk_id: str, question: str, answer: str, content_hash: str, language: str = "unknown"
     ) -> str:
         return fake_vertex_id
 
@@ -200,7 +200,7 @@ def test_edit_approve_updates_content_and_preserves_original_hash(
     expected_new_hash = _content_hash(edited_question, edited_answer)
 
     async def _fake_promote(
-        chunk_id: str, question: str, answer: str, content_hash: str
+        chunk_id: str, question: str, answer: str, content_hash: str, language: str = "unknown"
     ) -> str:
         return f"vertex-prod-{chunk_id}"
 
@@ -342,7 +342,7 @@ def test_second_patch_to_actioned_chunk_returns_409(
 
     # First PATCH — discard it
     async def _fake_promote(
-        chunk_id: str, question: str, answer: str, content_hash: str
+        chunk_id: str, question: str, answer: str, content_hash: str, language: str = "unknown"
     ) -> str:
         return f"vertex-prod-{chunk_id}"
 
@@ -392,7 +392,7 @@ def test_seed_5_review_mix_promoted_count_is_3(
     _IMPORT_ID = f"verification-seed-{uuid.uuid4().hex[:8]}"
 
     async def _fake_promote(
-        chunk_id: str, question: str, answer: str, content_hash: str
+        chunk_id: str, question: str, answer: str, content_hash: str, language: str = "unknown"
     ) -> str:
         return f"vertex-prod-{chunk_id}"
 

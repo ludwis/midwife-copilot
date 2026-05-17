@@ -24,8 +24,9 @@ import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import google.auth.credentials
 import pytest
 from fastapi.testclient import TestClient
 from google.cloud import firestore
@@ -39,6 +40,9 @@ from api.main import app
 _ADMIN_TOKEN = "integration-test-token"
 _PROJECT_ID = "test-project"
 _FIXTURE_DIR = Path(__file__).parent.parent / "fixtures"
+_TASKS_SA_EMAIL = "tasks-sa@test.iam.gserviceaccount.com"
+_CLOUD_RUN_URL = "https://stilla-test.run.app"
+_KB_IMPORTS_BUCKET = "test-kb-imports"
 
 # Regex for PII check: no digit sequence longer than 6 digits must appear
 # in any staged chunk's question or answer after PII stripping.
@@ -71,18 +75,53 @@ def captured_audit_events() -> list[dict[str, Any]]:
         yield events
 
 
+class _StaticCredentials(google.auth.credentials.Credentials):
+    """Always-valid static credentials for testing — no OAuth2 token refresh."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.token = "fake-kb-pipeline-test-token"
+        self.expiry = None  # Never expires
+
+    def refresh(self, request: object) -> None:  # type: ignore[override]
+        pass  # Static token — nothing to refresh
+
+
 @pytest.fixture()
 def admin_client(monkeypatch, captured_audit_events):  # noqa: ARG001
-    """FastAPI TestClient with admin token and emulator env vars set."""
+    """FastAPI TestClient with admin token, emulator env vars, and GCS upload mocked.
+
+    Patches google.auth.default to return static fake credentials so the extractor's
+    google.genai.Client(vertexai=True) and the deduplicator don't trigger OAuth2 token
+    refresh calls, which would not be in the VCR cassette.
+    """
     monkeypatch.setenv("ADMIN_TOKEN", _ADMIN_TOKEN)
     monkeypatch.setenv(
         "FIRESTORE_EMULATOR_HOST",
         os.environ.get("FIRESTORE_EMULATOR_HOST", "localhost:8080"),
     )
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", _PROJECT_ID)
+    monkeypatch.setenv("GCP_PROJECT_ID", _PROJECT_ID)
     monkeypatch.setenv("SPACY_MODEL", "xx_ent_wiki_sm")
-    with TestClient(app, raise_server_exceptions=True) as client:
-        yield client
+    monkeypatch.setenv("KB_IMPORTS_BUCKET_NAME", _KB_IMPORTS_BUCKET)
+
+    # Mock GCS upload so POST /imports doesn't make real GCS API calls.
+    import api.admin.kb.imports as _admin_imports
+    mock_gcs_admin = MagicMock()
+    mock_gcs_admin.bucket.return_value.blob.return_value = MagicMock()
+    monkeypatch.setattr(_admin_imports, "_gcs_client", mock_gcs_admin)
+    monkeypatch.setattr(_admin_imports, "KB_IMPORTS_BUCKET_NAME", _KB_IMPORTS_BUCKET)
+
+    creds = _StaticCredentials()
+    with (
+        # Prevent lifespan's vertexai.init from overriding conftest fake credentials.
+        patch("vertexai.init"),
+        # Intercept google.auth.default so genai.Client(vertexai=True) in the extractor
+        # uses the static token and never triggers an OAuth2 token refresh.
+        patch("google.auth.default", return_value=(creds, _PROJECT_ID)),
+    ):
+        with TestClient(app, raise_server_exceptions=True) as client:
+            yield client
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +167,7 @@ def test_golden_dataset(
     admin_client: TestClient,
     firestore_client: firestore.Client,
     captured_audit_events: list[dict[str, Any]],  # noqa: ARG001 — activates audit patch
+    monkeypatch,
 ):
     """E2E pipeline: golden WhatsApp export → staged chunks match golden_expected_chunks.json.
 
@@ -135,13 +175,35 @@ def test_golden_dataset(
     - chunk count == expected count: pipeline extracted all Q&A pairs from the cassette
     - every expected question present: content fidelity end-to-end (parse→PII strip→Gemini→stage)
     - no digit sequence >6 digits: GDPR/RODO PII stripping compliance requirement (SC-003)
+
+    Architecture note (KB-CLOUD-02): POST /imports now only uploads to GCS and creates the
+    Firestore doc. The pipeline runs in the internal endpoint (step 1b below) which is called
+    here to simulate Cloud Tasks delivery.  Gemini calls are intercepted by the VCR cassette.
     """
     golden_export = (_FIXTURE_DIR / "golden_whatsapp_export.txt").read_text(encoding="utf-8")
     golden_expected: list[dict[str, str]] = json.loads(
         (_FIXTURE_DIR / "golden_expected_chunks.json").read_text(encoding="utf-8")
     )
 
-    # ── POST: upload the golden WhatsApp export ──────────────────────────────
+    # Set up OIDC auth vars for the internal endpoint.
+    import api.internal.auth as _internal_auth
+    import api.internal.kb_pipeline as _kb_ep
+    import bot.kb.staging as _staging
+    monkeypatch.setattr(_internal_auth, "TASKS_SA_EMAIL", _TASKS_SA_EMAIL)
+    monkeypatch.setattr(_internal_auth, "CLOUD_RUN_SERVICE_URL", _CLOUD_RUN_URL)
+    # Reset Firestore singletons so they connect to the emulator on next use.
+    monkeypatch.setattr(_kb_ep, "_db", None)
+    monkeypatch.setattr(_staging, "_firestore_client", None)
+
+    # GCS download mock: return the golden fixture bytes for the internal endpoint.
+    mock_download_blob = MagicMock()
+    mock_download_blob.download_as_bytes.return_value = golden_export.encode("utf-8")
+    mock_gcs_download = MagicMock()
+    mock_gcs_download.return_value.bucket.return_value.list_blobs.return_value = [
+        mock_download_blob
+    ]
+
+    # ── Step 1a: POST /imports ────────────────────────────────────────────────
     resp = admin_client.post(
         "/api/admin/kb/imports",
         headers={"X-Admin-Token": _ADMIN_TOKEN},
@@ -159,11 +221,33 @@ def test_golden_dataset(
     )
     import_id: str = resp.json()["import_id"]
 
-    # ── POLL: wait for terminal status ────────────────────────────────────────
-    final = _poll_import(admin_client, import_id)
+    # ── Step 1b: Simulate Cloud Tasks delivery (internal pipeline endpoint) ───
+    # The VCR cassette intercepts the Gemini HTTP call inside this endpoint.
+    with (
+        patch("api.internal.kb_pipeline.storage.Client", mock_gcs_download),
+        patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={"email": _TASKS_SA_EMAIL},
+        ),
+    ):
+        proc_resp = admin_client.post(
+            f"/internal/kb/process-import/{import_id}",
+            headers={"Authorization": "Bearer fake-oidc-token"},
+        )
+    assert proc_resp.status_code == 200, (
+        f"Internal pipeline endpoint failed: {proc_resp.status_code} {proc_resp.json()}"
+    )
+    assert proc_resp.json()["status"] == "completed", (
+        f"Pipeline ended with: {proc_resp.json()}"
+    )
+
+    # ── Fetch import details to verify chunk count ────────────────────────────
+    final = admin_client.get(
+        f"/api/admin/kb/imports/{import_id}",
+        headers={"X-Admin-Token": _ADMIN_TOKEN},
+    ).json()
     assert final["status"] == "completed", (
-        f"Pipeline ended with status={final['status']!r}; "
-        f"error_message={final.get('error_message')!r}"
+        f"Import status mismatch: {final}"
     )
     assert final.get("chunks_extracted", 0) == len(golden_expected), (
         f"chunks_extracted={final.get('chunks_extracted', 0)!r} "

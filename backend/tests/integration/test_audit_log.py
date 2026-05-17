@@ -44,6 +44,9 @@ from bot.kb.extractor import ChunkDraft
 
 _ADMIN_TOKEN = "integration-test-token"
 _PROJECT_ID = "test-project"
+_TASKS_SA_EMAIL = "tasks-sa@test.iam.gserviceaccount.com"
+_CLOUD_RUN_URL = "https://stilla-test.run.app"
+_KB_IMPORTS_BUCKET = "test-kb-imports"
 
 # Three fixed Q&A pairs returned by the mocked extractor for every import.
 _FIXTURE_CHUNKS = [
@@ -204,7 +207,7 @@ def _make_mock_discovery_engine(query_result_count: int = 1) -> MagicMock:
 
 
 async def _fake_promote(
-    chunk_id: str, question: str, answer: str, content_hash: str
+    chunk_id: str, question: str, answer: str, content_hash: str, language: str = "unknown"
 ) -> str:
     """Stub for bot.kb.promotion.promote_chunk — returns a deterministic vertex ID."""
     return f"vertex-prod-{chunk_id}"
@@ -220,11 +223,14 @@ def test_all_8_event_types_emitted_in_full_sequence(
     admin_client: TestClient,
     firestore_client: firestore.Client,  # noqa: ARG001 — ensures emulator is up
     captured_audit: dict[str, Any],
+    monkeypatch,
 ):
     """Full import → review → query sequence emits all 8 required audit event types.
 
     Sequence executed:
-      1. POST /imports → kb_import_started + kb_chunk_staged×3 + kb_import_completed
+      1a. POST /imports → kb_import_started (creates Firestore doc, uploads to GCS)
+      1b. POST /internal/kb/process-import/{id} → simulate Cloud Tasks delivery
+            → kb_chunk_staged×3 + kb_import_completed
       2. PATCH approve   → kb_chunk_approved + kb_chunk_promoted (TDD RED: T052 adds)
       3. PATCH edit_approve → kb_chunk_edited + kb_chunk_promoted  (TDD RED: T052 adds)
       4. PATCH discard   → kb_chunk_discarded
@@ -233,6 +239,10 @@ def test_all_8_event_types_emitted_in_full_sequence(
     Why: SC-003 requires 100% audit coverage of all knowledge-management events.
     A single sequence test that spans the full pipeline is the only reliable way
     to verify that no event type silently regresses.
+
+    Architecture note: Since KB-CLOUD-02 the Firebase Function is a stub that only
+    enqueues a Cloud Tasks task. The full pipeline now runs in the internal endpoint.
+    This test simulates Cloud Tasks delivery in step 1b.
     """
     _REQUIRED_EVENTS = {
         "kb_import_started",
@@ -245,11 +255,42 @@ def test_all_8_event_types_emitted_in_full_sequence(
         "kb_query_test",
     }
 
+    # ── Environment setup ─────────────────────────────────────────────────
+    monkeypatch.setenv("KB_IMPORTS_BUCKET_NAME", _KB_IMPORTS_BUCKET)
+    monkeypatch.setenv("TASKS_SA_EMAIL", _TASKS_SA_EMAIL)
+    monkeypatch.setenv("CLOUD_RUN_SERVICE_URL", _CLOUD_RUN_URL)
+
+    import api.internal.auth as _internal_auth
+    import api.internal.kb_pipeline as _kb_ep
+    import api.admin.kb.imports as _admin_imports
+    import bot.kb.staging as _staging
+
+    monkeypatch.setattr(_internal_auth, "TASKS_SA_EMAIL", _TASKS_SA_EMAIL)
+    monkeypatch.setattr(_internal_auth, "CLOUD_RUN_SERVICE_URL", _CLOUD_RUN_URL)
+    monkeypatch.setattr(_admin_imports, "KB_IMPORTS_BUCKET_NAME", _KB_IMPORTS_BUCKET)
+
+    # Reset Firestore singletons so they connect to the emulator on next use.
+    monkeypatch.setattr(_kb_ep, "_db", None)
+    monkeypatch.setattr(_staging, "_firestore_client", None)
+
+    # GCS mock for POST /imports (upload path in api.admin.kb.imports)
+    mock_gcs_admin = MagicMock()
+    mock_gcs_admin.bucket.return_value.blob.return_value = MagicMock()
+    monkeypatch.setattr(_admin_imports, "_gcs_client", mock_gcs_admin)
+
+    # GCS mock for /internal endpoint (download path in api.internal.kb_pipeline)
+    mock_download_blob = MagicMock()
+    mock_download_blob.download_as_bytes.return_value = _MINIMAL_WHATSAPP.encode("utf-8")
+    mock_gcs_download = MagicMock()
+    mock_gcs_download.return_value.bucket.return_value.list_blobs.return_value = [
+        mock_download_blob
+    ]
+
     with (
-        patch("api.admin.kb.imports.extract_qa_pairs", return_value=_FIXTURE_CHUNKS),
+        patch("api.internal.kb_pipeline.storage.Client", mock_gcs_download),
         patch(
-            "api.admin.kb.imports.strip_pii",
-            side_effect=lambda content: (content, False),
+            "api.internal.kb_pipeline.extract_qa_pairs_async",
+            new=AsyncMock(return_value=_FIXTURE_CHUNKS),
         ),
         patch(
             "bot.kb.deduplicator.check_duplicate",
@@ -259,8 +300,12 @@ def test_all_8_event_types_emitted_in_full_sequence(
             "bot.kb.promotion.promote_chunk",
             side_effect=_fake_promote,
         ),
+        patch(
+            "google.oauth2.id_token.verify_oauth2_token",
+            return_value={"email": _TASKS_SA_EMAIL},
+        ),
     ):
-        # ── Step 1: POST /imports ─────────────────────────────────────────
+        # ── Step 1a: POST /imports ─────────────────────────────────────────
         resp = admin_client.post(
             "/api/admin/kb/imports",
             headers={"X-Admin-Token": _ADMIN_TOKEN},
@@ -278,10 +323,20 @@ def test_all_8_event_types_emitted_in_full_sequence(
         )
         import_id: str = resp.json()["import_id"]
 
-        # Poll until pipeline completes
-        final = _poll_import(admin_client, import_id)
-        assert final["status"] == "completed", (
-            f"Import pipeline did not complete: {final}"
+        # ── Step 1b: Simulate Cloud Tasks delivery ─────────────────────────
+        # In the new architecture the Firebase Function enqueues a Cloud Tasks
+        # task; Cloud Tasks calls /internal/kb/process-import/{id}.  We call
+        # the endpoint directly to run the pipeline synchronously in the test.
+        proc_resp = admin_client.post(
+            f"/internal/kb/process-import/{import_id}",
+            headers={"Authorization": "Bearer fake-oidc-token"},
+        )
+        assert proc_resp.status_code == 200, (
+            f"Internal pipeline endpoint failed: {proc_resp.status_code} {proc_resp.json()}"
+        )
+        final_status = proc_resp.json()
+        assert final_status["status"] == "completed", (
+            f"Import pipeline did not complete: {final_status}"
         )
 
         # Retrieve the 3 staged chunks
