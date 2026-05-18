@@ -176,7 +176,8 @@ Swagger UI: http://localhost:8000/docs
 | `ADMIN_TOKEN` | No | Legacy static secret for `X-Admin-Token` header (server-to-server scripts only) | 64-char hex string |
 | `KB_IMPORTS_BUCKET_NAME` | Yes | GCS bucket for temporary chat export uploads | `midwife-copilot-kb-imports-dev` |
 | `AUDIT_BUCKET_NAME` | Yes | GCS bucket for append-only JSONL audit logs | `midwife-bot-audit-dev` |
-| `VERTEX_SEARCH_DATASTORE_PRODUCTION` | Yes | Vertex AI Search production data store ID | `knowledge_production` |
+| `VERTEX_SEARCH_ENGINE_ID` | Yes | Vertex AI Search engine/app ID (Enterprise Edition — used in `engines/*/servingConfigs/*` path) | `knowledge-base-search_1778956593741` |
+| `VERTEX_SEARCH_DATASTORE_PRODUCTION` | Yes | Vertex AI Search production data store ID (fallback if `VERTEX_SEARCH_ENGINE_ID` not set) | `knowledge_production` |
 | `VERTEX_SEARCH_DATASTORE_STAGING` | Yes | Vertex AI Search staging data store ID | `knowledge_staging` |
 | `VERTEX_SEARCH_LOCATION` | Yes | Vertex AI Search region | `eu` |
 | `CLOUD_RUN_SERVICE_URL` | Yes | This service's own URL (used for OIDC audience validation) | `https://stilla-backend-xxx-ew.a.run.app` |
@@ -200,7 +201,7 @@ The workflow reads `CLOUD_RUN_SERVICE_URL` via `sys.get_env()`. This is injected
 | `VITE_FIREBASE_STORAGE_BUCKET` | Yes | Firebase Storage bucket |
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | Yes | Firebase messaging sender ID |
 | `VITE_FIREBASE_APP_ID` | Yes | Firebase app ID |
-| `VITE_ADMIN_EMAIL` | No | Pre-filled email hint on login page |
+| `VITE_ADMIN_EMAIL` | No | Comma-separated list of allowed admin email addresses. Users not in this list are signed out immediately. Leave empty to allow any authenticated Google account. Example: `alice@example.com,bob@example.com` |
 
 ---
 

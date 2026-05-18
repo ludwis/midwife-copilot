@@ -15,12 +15,15 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => user.value !== null)
 
-  const adminEmail = import.meta.env.VITE_ADMIN_EMAIL as string
+  const adminEmails = (import.meta.env.VITE_ADMIN_EMAIL as string)
+    ?.split(',')
+    .map((e: string) => e.trim())
+    .filter(Boolean) ?? []
 
   const auth = getAuth()
 
   onAuthStateChanged(auth, (firebaseUser) => {
-    if (firebaseUser && adminEmail && firebaseUser.email !== adminEmail) {
+    if (firebaseUser && adminEmails.length > 0 && !adminEmails.includes(firebaseUser.email ?? '')) {
       firebaseSignOut(auth)
       user.value = null
     } else {
