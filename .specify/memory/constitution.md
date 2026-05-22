@@ -1,50 +1,209 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+SYNC IMPACT REPORT
+==================
+Version change: [TEMPLATE] → 1.0.0
+Modified principles: N/A (initial fill from template)
+Added sections:
+  - Core Principles (9 principles derived from midwife-assistant-bot-mvp-v4.md)
+  - Technology & Infrastructure Constraints
+  - Development Workflow & Quality Gates
+  - Governance
+Removed sections: N/A
+Templates requiring updates:
+  - .specify/templates/plan-template.md ✅ Constitution Check section is generic; compatible
+  - .specify/templates/spec-template.md ✅ No principle-specific mandatory sections required
+  - .specify/templates/tasks-template.md ✅ Task categories align with principles (audit, safety, KB)
+Deferred TODOs:
+  - TODO(RATIFICATION_DATE): Ratification date set to initial fill date 2026-05-14.
+    Update if project was formally begun earlier.
+  - Regulatory pre-launch gate (MDR/GDPR/EU AI Act) is tracked in open risks
+    in midwife-assistant-bot-mvp-v4.md — no separate governance article added
+    until lawyer review completes.
+-->
+
+# Stilla Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Human-in-the-Loop (Co-pilot Pattern) — NON-NEGOTIABLE
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+Every outbound message to a client MUST pass through midwife review and explicit
+approval before delivery. The system MUST NOT have any code path that autonomously
+sends a message to a client. The WhatsApp adapter's `send_message()` MUST only be
+callable from the `admin.reply` route.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+**Rationale:** Medical-adjacent content cannot tolerate hallucinations or context
+errors. "AI drafted, midwife reviewed and sent" is professionally defensible;
+autonomous AI sends are not. Liability MUST remain with the licensed practitioner.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Ports & Adapters (Hexagonal Architecture)
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+Core business logic — retrieval, generation, conversation state, knowledge management —
+MUST be isolated from the messaging channel behind a `MessageChannel` interface.
+No core module (under `bot/`) MUST import from `adapters/` directly. New channels
+MUST be added as adapters, not as changes to core logic.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+**Rationale:** The messaging surface will evolve (Messenger, Telegram, Signal). Channel
+independence enables headless testing of core logic and future adapter additions without
+rewrites.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Retrieval-Augmented Generation (RAG)
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+All AI-generated reply drafts MUST be grounded in retrieved snippets from the
+production Vertex AI Search index. The system prompt MUST require the model to answer
+only from provided reference material and to cite sources. The midwife MUST see cited
+snippets alongside each draft in the PWA.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Rationale:** Ungrounded LLM generation hallucinates. In medical content, hallucination
+is unacceptable. RAG restricts the LLM to "natural-language renderer of known content"
+rather than an unconstrained knowledge source.
+
+### IV. Fail-Closed Safety
+
+Any ambiguity — low retrieval confidence, emergency triage signal, downstream API
+failure, missing context — MUST surface the message to the midwife with no draft,
+flagged as urgent. There MUST be no "best-effort auto-reply" path. All inbound
+messages MUST be classified on a 4-level urgency scale by an LLM-based classifier
+(not keyword-based). High-urgency messages MUST bypass drafting entirely and push
+a priority notification.
+
+**Rationale:** Default-deny is the only acceptable posture when the failure mode is
+a delayed response to a real emergency. Keyword matchers miss oblique descriptions
+common in pregnancy and birth contexts.
+
+### V. Immutable Audit Log
+
+Every inbound message, every AI draft, and every approved outbound message MUST be
+written to an append-only audit log (Cloud Logging → write-once GCS bucket with
+object retention lock). The audit log MUST enable full conversation reconstruction
+at any historical point. Firestore state is mutable and queryable; the audit log is
+the source of truth for regulatory review.
+
+**Rationale:** Healthcare-adjacent operations face regulatory scrutiny and dispute
+resolution. Mutable state is insufficient evidence. The record MUST capture what the
+AI drafted, what the midwife approved, and what the client received — timestamped
+and tamper-evident.
+
+### VI. Single-Artifact Deployment (PWA-First)
+
+The midwife's primary interface MUST be a Vue 3 PWA served as static files from the
+same Docker image and Cloud Run service as the FastAPI backend. The system MUST NOT
+introduce a separate frontend hosting service without explicit architectural review
+and justification.
+
+**Rationale:** Single codebase, atomic deploys, one URL, one set of secrets, one
+Cloud Run service to monitor. PWA provides home-screen install + push notifications
+without app-store review latency. The single-artifact constraint keeps operational
+complexity minimal during the pilot phase.
+
+### VII. Token-Based Client Onboarding
+
+Client onboarding MUST use Pattern 1 (Click-to-Chat): a unique tokenized `wa.me`
+link per invite, generated by the system. The client MUST physically initiate the
+first WhatsApp message. The system MUST capture and store verifiable opt-in evidence
+(message ID + timestamp + verbatim consent reply "YES") before activating any client
+account.
+
+**Rationale:** Bypasses Meta's template-approval requirement for first contact, provides
+verifiable opt-in evidence, and matches existing midwife workflows (offline-first,
+digital-handoff second).
+
+### VIII. Two-Tier Knowledge Base
+
+Knowledge base updates from approved replies MUST go to a staging index first. Staged
+chunks MUST pass a weekly midwife review before promotion to the production retrieval
+index. Direct ingestion to the production index MUST only occur through the explicit
+weekly-review promote action.
+
+**Rationale:** Instant ingestion creates context-specific replies that shouldn't
+generalize and duplicate Q&A pairs that pollute retrieval ranking. The weekly gate
+prevents silent KB drift in medical content.
+
+### IX. Compliance-by-Design
+
+Three compliance primitives are first-class architecture requirements, not afterthoughts:
+
+- **AI disclosure.** The first bot message to every new client MUST be the consent +
+  disclosure prompt. The PWA MUST display an "AI-drafted" badge on every draft.
+- **Consent capture.** Consent MUST be stored per client as message ID + timestamp +
+  verbatim reply. It MUST be retrievable from the audit log.
+- **Data minimization.** No clinical history MUST be stored beyond conversation messages
+  and a minimal client profile (name, due date, midwife reference). A right-to-be-forgotten
+  flow MUST wipe Firestore + KB references while retaining the audit log under
+  GDPR Art. 17(3)(e).
+
+**Rationale:** Healthcare-adjacent AI systems face GDPR Art. 9, EU AI Act Art. 50
+transparency obligations, and possible MDR classification. Compliance must be structural,
+not a post-hoc addition.
+
+## Technology & Infrastructure Constraints
+
+The following technology choices are locked for the MVP and MUST NOT be substituted
+without an explicit constitution amendment:
+
+- **Backend**: Python 3.12 + FastAPI (async REST; serves PWA static files)
+- **Frontend**: Vue 3 + TypeScript + Tailwind CSS + Vite + Pinia (PWA via vite-plugin-pwa)
+- **LLM & Safety Classifier**: Vertex AI Gemini 2.0 Flash (separate calls for draft
+  generation and safety triage)
+- **Knowledge Retrieval**: Vertex AI Search (Discovery Engine) — two data stores:
+  staging and production (both in EU region)
+- **State Store**: Firestore (europe-west1)
+- **Audit Log**: Cloud Logging → GCS bucket with 7-year object retention lock
+  (europe-west1)
+- **Push Notifications**: Web Push API (VAPID)
+- **Hosting**: Google Cloud Run, min-instances=1, europe-west1
+- **Secrets**: Google Secret Manager (injected as Cloud Run env vars)
+- **Messaging Channel**: WhatsApp Cloud API (Meta) — primary channel for MVP
+
+Infrastructure MUST remain within GCP europe-west1 for GDPR residency compliance.
+Any new external dependency MUST be reviewed for GDPR data-residency and security
+implications before introduction.
+
+## Development Workflow & Quality Gates
+
+**Feature branch naming**: MUST follow `{###}-{short-description}` convention.
+
+**Pre-merge gates** — all MUST pass before merging to `main`:
+1. Safety classifier and audit log integration tests MUST pass with a real Firestore
+   emulator (no mocks for state-critical paths — see Principle V).
+2. Constitution Check section in every `plan.md` MUST be completed and signed off.
+3. Any new code path that could result in an outbound WhatsApp message MUST be
+   reviewed against Principle I before merge.
+
+**Regulatory hard gate**: A lawyer review covering MDR Class I qualification (EU
+Regulation 2017/745), GDPR Art. 9 DPIA, and EU AI Act Art. 50 obligations MUST
+complete before any public pilot beyond the internal test phase.
+
+**Deployment**: All deployments MUST go via Cloud Build (`cloudbuild.yaml`). Manual
+`gcloud run deploy` is acceptable only in local development or emergency hotfix
+contexts, and MUST be documented in the incident log.
+
+**Complexity justification**: Any architectural addition that introduces a new GCP
+service, a new external dependency, or a third project artifact MUST be justified
+in the `Complexity Tracking` table of the relevant `plan.md`.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other documented practices for the Stilla project.
+In case of conflict between a feature plan and this constitution, the constitution
+takes precedence. The feature plan MUST be amended to comply.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Amendment procedure:**
+1. Author proposes amendment as a PR modifying `.specify/memory/constitution.md`.
+2. PR description MUST include: principle(s) affected, rationale for change, and
+   a migration plan for any in-flight work.
+3. Amendment MUST increment the version number per semantic versioning rules
+   (MAJOR for principle removals/redefinitions; MINOR for additions; PATCH for
+   clarifications).
+4. All open feature specs and plans MUST be reviewed for consistency after any
+   MAJOR or MINOR amendment.
+
+**Compliance review**: Every `plan.md` Constitution Check section serves as the
+per-feature compliance review. The project lead MUST review flagged violations
+before implementation begins.
+
+**Versioning policy**: `CONSTITUTION_VERSION` follows `MAJOR.MINOR.PATCH`. Version
+line MUST be updated on every amendment. `LAST_AMENDED_DATE` MUST use ISO 8601
+format (YYYY-MM-DD).
+
+**Version**: 1.0.0 | **Ratified**: 2026-05-14 | **Last Amended**: 2026-05-14

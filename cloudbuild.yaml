@@ -1,0 +1,171 @@
+substitutions:
+  _IMAGE_TAG: $COMMIT_SHA
+  _KB_IMPORTS_BUCKET_NAME: midwife-copilot-kb-imports-dev
+  _AUDIT_BUCKET_NAME: midwife-bot-audit-dev
+  VERTEX_SEARCH_ENGINE_ID: knowledge-base-search_1778956593741
+  _VERTEX_SEARCH_DATASTORE_PRODUCTION: knowledge_production
+  _VERTEX_SEARCH_DATASTORE_STAGING: knowledge_staging
+  _VERTEX_SEARCH_LOCATION: eu
+  _GEMINI_MODEL: gemini-3-flash-preview
+  _SPACY_MODEL: xx_ent_wiki_sm
+  _DUPLICATE_SIMILARITY_THRESHOLD: "0.92"
+
+steps:
+  - id: docker-build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend:$_IMAGE_TAG
+      - --tag
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend:latest
+      - --file
+      - backend/Dockerfile
+      - backend/
+
+  - id: docker-push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend
+    waitFor:
+      - docker-build
+
+  - id: cloud-run-deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - stilla-backend
+      - --image
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend:$_IMAGE_TAG
+      - --region
+      - europe-west1
+      - --platform
+      - managed
+      - --min-instances
+      - "1"
+      - --allow-unauthenticated
+      - --timeout=3600
+      - --concurrency=1
+      - --memory=2Gi
+      - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=europe-west1,KB_IMPORTS_BUCKET_NAME=$_KB_IMPORTS_BUCKET_NAME,AUDIT_BUCKET_NAME=$_AUDIT_BUCKET_NAME,VERTEX_SEARCH_ENGINE_ID=$_VERTEX_SEARCH_ENGINE_ID,VERTEX_SEARCH_DATASTORE_PRODUCTION=$_VERTEX_SEARCH_DATASTORE_PRODUCTION,VERTEX_SEARCH_DATASTORE_STAGING=$_VERTEX_SEARCH_DATASTORE_STAGING,VERTEX_SEARCH_LOCATION=$_VERTEX_SEARCH_LOCATION,GEMINI_MODEL=$_GEMINI_MODEL,SPACY_MODEL=$_SPACY_MODEL,DUPLICATE_SIMILARITY_THRESHOLD=$_DUPLICATE_SIMILARITY_THRESHOLD,WORKFLOW_SA_EMAIL=kb-pipeline-invoker@$PROJECT_ID.iam.gserviceaccount.com
+    waitFor:
+      - docker-push
+
+  # ---------------------------------------------------------------------------
+  # Deploy Cloud Workflow
+  # Reads the Cloud Run service URL after deploy and injects it as an env var.
+  # ---------------------------------------------------------------------------
+  - id: deploy-workflow
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        CLOUD_RUN_URL=$$(gcloud run services describe stilla-backend \
+          --region=europe-west1 \
+          --project=$PROJECT_ID \
+          --format="value(status.url)")
+
+        # Inject the service URL and workflow SA email back into Cloud Run so
+        # the internal OIDC audience and email checks have the correct values.
+        gcloud run services update stilla-backend \
+          --region=europe-west1 \
+          --project=$PROJECT_ID \
+          --update-env-vars=CLOUD_RUN_SERVICE_URL=$$CLOUD_RUN_URL
+
+        gcloud workflows deploy kb-import-pipeline \
+          --location=europe-west1 \
+          --source=workflows/kb-import-pipeline.yaml \
+          --service-account=kb-pipeline-invoker@$PROJECT_ID.iam.gserviceaccount.com \
+          --set-env-vars=CLOUD_RUN_SERVICE_URL=$$CLOUD_RUN_URL \
+          --project=$PROJECT_ID
+    waitFor:
+      - cloud-run-deploy
+
+  # ---------------------------------------------------------------------------
+  # IAM: grant the Workflows service agent the logWriter role so the workflow
+  # can emit execution logs to Cloud Logging.
+  # ---------------------------------------------------------------------------
+  - id: grant-workflows-log-writer
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-workflows.iam.gserviceaccount.com" \
+          --role="roles/logging.logWriter" \
+          || true
+    waitFor:
+      - deploy-workflow
+
+  # ---------------------------------------------------------------------------
+  # IAM: grant the kb-pipeline-invoker SA the eventarc.eventReceiver role so
+  # it is allowed to receive Eventarc events (required before trigger creation).
+  # ---------------------------------------------------------------------------
+  - id: grant-eventarc-receiver
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:kb-pipeline-invoker@$PROJECT_ID.iam.gserviceaccount.com" \
+          --role="roles/eventarc.eventReceiver" \
+          || true
+    waitFor:
+      - grant-workflows-log-writer
+
+  # ---------------------------------------------------------------------------
+  # Create Eventarc trigger for Firestore kb_imports document creation.
+  # Note: --location=eur3 must match the Firestore database region.
+  # The trigger is idempotent (|| true) on subsequent Cloud Build runs.
+  # ---------------------------------------------------------------------------
+  - id: create-eventarc-trigger
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud eventarc triggers create kb-import-created \
+          --location=eur3 \
+          --destination-workflow=kb-import-pipeline \
+          --destination-workflow-location=europe-west1 \
+          --event-filters="type=google.cloud.firestore.document.v1.created" \
+          --event-filters="database=(default)" \
+          --event-filters-path-pattern="document=kb_imports/{importId}" \
+          --event-data-content-type=application/protobuf \
+          --service-account=kb-pipeline-invoker@$PROJECT_ID.iam.gserviceaccount.com \
+          --project=$PROJECT_ID \
+          || true
+    waitFor:
+      - grant-eventarc-receiver
+
+  # ---------------------------------------------------------------------------
+  # IAM: grant the kb-pipeline-invoker SA the workflows.invoker role so that
+  # Eventarc can use it to trigger the workflow.
+  # ---------------------------------------------------------------------------
+  - id: grant-workflow-invoker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member="serviceAccount:kb-pipeline-invoker@$PROJECT_ID.iam.gserviceaccount.com" \
+          --role="roles/workflows.invoker" \
+          || true
+    waitFor:
+      - create-eventarc-trigger
+
+images:
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend:$_IMAGE_TAG
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/midwife-copilot/backend:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
